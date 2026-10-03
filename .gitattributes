@@ -3,10 +3,7 @@
 # Fuerza que TODO archivo de texto quede guardado en el repositorio con
 # fin de linea LF (Unix), sin importar si quien hizo el commit fue
 # Windows, Ubuntu o macOS. Esto es lo que evita el problema clasico de
-# "a mi compañero de Ubuntu le aparecen todos los archivos como
-# modificados apenas hace git pull" cuando alguien con Windows sube
-# archivos con CRLF.
-#
+
 # Con este archivo en la raiz del repo, Git normaliza los finales de
 # linea EL SOLO al hacer commit/checkout, sin depender de que cada
 # persona tenga bien configurado su git config local.
