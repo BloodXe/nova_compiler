@@ -1,0 +1,11 @@
+# espera: E201 E101 E201 E102 E201 E208
+functio f() -> integer {
+    varia a : integer[2][2][2];
+    varia x : integer = 1 $ 2
+    varia y : integer = "sin cerrar;
+    si (x > 0 {
+        redde 1;
+    }
+    varia classis : integer = 0;
+    redde 0;
+}

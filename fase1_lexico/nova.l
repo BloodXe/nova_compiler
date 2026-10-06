@@ -25,6 +25,20 @@ Reservada tabla[] = {
 };
 int cant_reservadas = sizeof(tabla) / sizeof(tabla[0]);
 
+/* Palabras reservadas para versiones futuras: usarlas como identificador es E208. */
+static const char *futuras[] = {
+    "classis", "structura", "enumeratio", "novum", "dele", "elige", "casus",
+    "fac", "tempta", "cape", "nullum", "hoc", "stativum", "publicum",
+    "modulus", "ex", "litera", "relatio", "compara", "in", "realis", "naturalis"
+};
+
+static int es_futura(const char *lexema) {
+    size_t i;
+    for (i = 0; i < sizeof(futuras) / sizeof(futuras[0]); i++)
+        if (strcmp(lexema, futuras[i]) == 0) return 1;
+    return 0;
+}
+
 int buscar_reservada(char *lexema) {
     int i;
     for (i = 0; i < cant_reservadas; i++) {
@@ -33,9 +47,37 @@ int buscar_reservada(char *lexema) {
     return TK_IDENT;
 }
 
-char buffer_cadena[4096];
-#define MAX_CADENA ((int)sizeof(buffer_cadena) - 1)
-int  len_cadena;
+/* Buffer de cadenas dinamico: crece segun haga falta, asi que una cadena
+ * larga nunca se trunca en silencio. */
+static char  *buf_cad = NULL;
+static size_t cap_cad = 0, len_cad = 0;
+
+static void cad_reiniciar(void) {
+    len_cad = 0;
+    if (buf_cad == NULL) {
+        cap_cad = 256;
+        buf_cad = malloc(cap_cad);
+        if (buf_cad == NULL) { fprintf(stderr, "Sin memoria\n"); exit(3); }
+    }
+}
+
+static void cad_poner(char c) {
+    if (len_cad + 1 >= cap_cad) {
+        char *nuevo = realloc(buf_cad, cap_cad * 2);
+        if (nuevo == NULL) { fprintf(stderr, "Sin memoria\n"); exit(3); }
+        buf_cad = nuevo;
+        cap_cad *= 2;
+    }
+    buf_cad[len_cad++] = c;
+}
+
+static char *cad_terminar(void) {
+    char *copia;
+    buf_cad[len_cad] = '\0';
+    copia = strdup(buf_cad);
+    if (copia == NULL) { fprintf(stderr, "Sin memoria\n"); exit(3); }
+    return copia;
+}
 
 int lin_act = 1, col_act = 1;
 
@@ -44,6 +86,13 @@ int com_linea, com_col;
 
 int prev_fin_linea = 1, prev_fin_col = 1;
 static int ult_fin_linea = 1, ult_fin_col = 1;
+
+/* Un token "malo" es el que se devolvio despues de reportar un error lexico
+ * (cadena sin cerrar, numero mal formado). El parser lo consulta para no
+ * sumar un E202 de rebote por culpa de ese mismo token. */
+int tok_prev_malo = 0;
+static int tok_malo = 0;
+#define MALO() (tok_malo = 1)
 
 #define MAX_LLAVES 1024
 static int llaves_lin[MAX_LLAVES], llaves_col[MAX_LLAVES];
@@ -108,49 +157,59 @@ static int largo_utf8(const char *t) {
 "#"                  { }
 
     /* Cadenas. Los escapes validos son \n, \t, \\, y \\". */
-\"                   { BEGIN(CADENA); len_cadena = 0; cad_linea = yylloc.first_line; cad_col = yylloc.first_column; }
-<CADENA>\"           { BEGIN(INITIAL); buffer_cadena[len_cadena] = '\0'; yylval.texto = strdup(buffer_cadena);
+\"                   { BEGIN(CADENA); cad_reiniciar(); cad_linea = yylloc.first_line; cad_col = yylloc.first_column; }
+<CADENA>\"           { BEGIN(INITIAL); yylval.texto = cad_terminar();
                        yylloc.first_line = cad_linea; yylloc.first_column = cad_col; return TK_CADENA; }
-<CADENA>\\n          { if (len_cadena < MAX_CADENA) buffer_cadena[len_cadena++] = '\n'; }
-<CADENA>\\t          { if (len_cadena < MAX_CADENA) buffer_cadena[len_cadena++] = '\t'; }
-<CADENA>\\\\         { if (len_cadena < MAX_CADENA) buffer_cadena[len_cadena++] = '\\'; }
-<CADENA>\\\"         { if (len_cadena < MAX_CADENA) buffer_cadena[len_cadena++] = '"'; }
+<CADENA>\\n          { cad_poner('\n'); }
+<CADENA>\\t          { cad_poner('\t'); }
+<CADENA>\\\\         { cad_poner('\\'); }
+<CADENA>\\\"         { cad_poner('"'); }
 <CADENA>\\.          { diag_error("E104", yylloc.first_line, yylloc.first_column, 2, "secuencia de escape desconocida '%s'", yytext); }
-<CADENA>\n           { diag_error("E102", cad_linea, cad_col, 1, "cadena sin comilla de cierre antes del fin de linea"); buffer_cadena[len_cadena] = '\0'; yylval.texto = strdup(buffer_cadena);
+<CADENA>\n           { diag_error("E102", cad_linea, cad_col, 1, "cadena sin comilla de cierre antes del fin de linea"); MALO(); yylval.texto = cad_terminar();
                        yylloc.last_line = yylloc.first_line; yylloc.last_column = yylloc.first_column;
                        yylloc.first_line = cad_linea; yylloc.first_column = cad_col; BEGIN(INITIAL); return TK_CADENA; }
-<CADENA><<EOF>>      { diag_error("E102", cad_linea, cad_col, 1, "cadena sin comilla de cierre antes del fin de linea"); buffer_cadena[len_cadena] = '\0'; yylval.texto = strdup(buffer_cadena);
+<CADENA><<EOF>>      { diag_error("E102", cad_linea, cad_col, 1, "cadena sin comilla de cierre antes del fin de linea"); MALO(); yylval.texto = cad_terminar();
                        yylloc.first_line = cad_linea; yylloc.first_column = cad_col; yylloc.last_line = lin_act; yylloc.last_column = col_act; BEGIN(INITIAL); return TK_CADENA; }
-<CADENA>.            { if (len_cadena < MAX_CADENA) buffer_cadena[len_cadena++] = yytext[0]; }
+<CADENA>.            { cad_poner(yytext[0]); }
 
     /* Identificadores y palabras reservadas. */
 [A-Za-z_][A-Za-z0-9_]*  {
     int tok = buscar_reservada(yytext);
-    if (tok == TK_IDENT) yylval.texto = strdup(yytext);
+    if (tok == TK_IDENT) {
+        if (yyleng > 255)
+            diag_error("E107", yylloc.first_line, yylloc.first_column, yyleng,
+                       "identificador de mas de 255 caracteres");
+        else if (es_futura(yytext))
+            diag_error("E208", yylloc.first_line, yylloc.first_column, yyleng,
+                       "'%s' esta reservada para versiones futuras", yytext);
+        yylval.texto = strdup(yytext);
+    }
     return tok;
 }
 
     /* Enteros decimales y hexadecimales. */
-0x[0-9A-Fa-f]+[A-Za-z_][A-Za-z0-9_]* {
+0[xX][0-9A-Fa-f]+[G-Zg-z_][A-Za-z0-9_]* {
     diag_error("E105", yylloc.first_line, yylloc.first_column, yyleng, "literal hexadecimal seguido de identificador sin separador");
+    MALO();
     yylval.entero = 0;
     return TK_ENTERO;
 }
-0x[0-9A-Fa-f]+ {
+0[xX][0-9A-Fa-f]+ {
     unsigned long valor = strtoul(yytext, NULL, 16);
     if (valor > 0xFFFFFFFFUL) diag_error("E106", yylloc.first_line, yylloc.first_column, yyleng, "el literal no cabe en un integer de 32 bits");
     yylval.entero = (long)valor;
     return TK_ENTERO;
 }
-0x              { diag_error("E105", yylloc.first_line, yylloc.first_column, 2, "literal numerico mal formado: '0x'"); }
+0[xX]           { diag_error("E105", yylloc.first_line, yylloc.first_column, 2, "literal numerico mal formado: '0x'"); }
 [0-9]+[A-Za-z_][A-Za-z0-9_]* {
     diag_error("E105", yylloc.first_line, yylloc.first_column, yyleng, "literal entero seguido de identificador sin separador");
+    MALO();
     yylval.entero = 0;
     return TK_ENTERO;
 }
 [0-9]+          {
     unsigned long valor = strtoul(yytext, NULL, 10);
-    if (valor > 0xFFFFFFFFUL) diag_error("E106", yylloc.first_line, yylloc.first_column, yyleng, "el literal no cabe en un integer de 32 bits");
+    if (valor > 2147483647UL) diag_error("E106", yylloc.first_line, yylloc.first_column, yyleng, "el literal no cabe en un integer de 32 bits");
     yylval.entero = (long)valor;
     return TK_ENTERO;
 }
@@ -207,6 +266,8 @@ int yylex(void) {
     int t;
     prev_fin_linea = ult_fin_linea;
     prev_fin_col = ult_fin_col;
+    tok_prev_malo = tok_malo;
+    tok_malo = 0;
     t = yylex_crudo();
     ult_fin_linea = yylloc.last_line;
     ult_fin_col = yylloc.last_column;

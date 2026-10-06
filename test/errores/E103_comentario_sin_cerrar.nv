@@ -1,0 +1,3 @@
+constans A : integer = 1;
+#{ este comentario nunca cierra
+constans B : integer = 2;

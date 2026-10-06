@@ -10,9 +10,15 @@
 extern char *yytext;
 extern FILE *yyin;
 extern int prev_fin_linea, prev_fin_col;
+extern int tok_prev_malo;
 int llave_abierta(int *lin, int *col);
 int yylex(void);
 void yyerror(const char *msg);
+static void err_esperaba(const char *que);
+/* Tras un E203 (falta un '}'), el resto del archivo ya no tiene estructura
+ * confiable: los errores sintacticos siguientes serian ruido en cascada. */
+static int sint_suprimido = 0;
+static int cierra_sentencia(int tok);
 
 int errores_sintacticos = 0;
 Nodo *raiz_ast = NULL;
@@ -66,11 +72,11 @@ Nodo *raiz_ast = NULL;
 %left TK_DESP_IZQ TK_DESP_DER TK_DESP_LOG
 %left TK_MAS TK_MENOS
 %left TK_POR TK_ENTRE TK_MODULO
-%right TK_NON TK_NOT UMENOS
+%precedence TK_NON TK_NOT UMENOS
 
 %type <nodo> programa importaciones_opt importacion
 %type <nodo> declaraciones_globales_opt declaracion_global
-%type <nodo> anotaciones_opt anotacion privatum_opt
+%type <nodo> anotaciones anotacion privatum_opt
 %type <nodo> decl_func parametros_opt parametros parametro
 %type <nodo> decl_const decl_var
 %type <nodo> tipo tipo_param dims dims_param
@@ -81,7 +87,7 @@ Nodo *raiz_ast = NULL;
 %type <nodo> sent_dum sent_per per_init
 %type <nodo> sent_redde sent_rumpe sent_perge
 %type <nodo> sent_llamada llamada_expr lista_argumentos argumentos
-%type <nodo> expresion referencia
+%type <nodo> expresion referencia nombre_ref
 
 %start programa
 
@@ -100,7 +106,7 @@ programa
 
 /* Importaciones */
 importaciones_opt
-    : /* vacio */                       { $$ = NULL; }
+    : %empty                       { $$ = NULL; }
     | importaciones_opt importacion     { $$ = cadena_agregar($1, $2); }
     ;
 
@@ -116,25 +122,40 @@ importacion
 
 /* Declaraciones globales */
 declaraciones_globales_opt
-    : /* vacio */                                   { $$ = NULL; }
+    : %empty                                   { $$ = NULL; }
     | declaraciones_globales_opt declaracion_global { $$ = cadena_agregar($1, $2); }
     ;
 
+/* Las anotaciones solo preceden a funciones. 'varia' no es valida fuera de
+ * una funcion (E320), pero se reconoce para dar un error claro y seguir.
+ * 'error' es la recuperacion en modo panico: descarta tokens hasta el inicio
+ * de la siguiente declaracion global. */
 declaracion_global
-    : anotaciones_opt privatum_opt decl_func
+    : anotaciones privatum_opt decl_func
         { $$ = $3; agregar_hijo($$, $1); agregar_hijo($$, $2); }
-    | anotaciones_opt privatum_opt decl_const
-        { $$ = $3; agregar_hijo($$, $1); agregar_hijo($$, $2); }
+    | privatum_opt decl_func
+        { $$ = $2; agregar_hijo($$, $1); }
+    | privatum_opt decl_const
+        { $$ = $2; agregar_hijo($$, $1); }
+    | decl_var
+        {
+            diag_error("E320", @1.first_line, @1.first_column, 5,
+                       "declaracion global que no es 'constans': fuera de las funciones solo se admiten 'constans' y 'functio'");
+            liberar_ast($1);
+            $$ = NULL;
+        }
+    | error
+        { $$ = NULL; }
     ;
 
 privatum_opt
-    : /* vacio */   { $$ = NULL; }
+    : %empty   { $$ = NULL; }
     | TK_PRIVATUM   { $$ = nodo_nuevo(NODO_PRIVATUM, NULL, 0, @$.first_line); }
     ;
 
-anotaciones_opt
-    : /* vacio */                   { $$ = NULL; }
-    | anotaciones_opt anotacion     { $$ = cadena_agregar($1, $2); }
+anotaciones
+    : anotacion                 { $$ = $1; }
+    | anotaciones anotacion     { $$ = cadena_agregar($1, $2); }
     ;
 
 anotacion
@@ -158,7 +179,7 @@ decl_func
     ;
 
 parametros_opt
-    : /* vacio */   { $$ = NULL; }
+    : %empty   { $$ = NULL; }
     | parametros    { $$ = $1; }
     ;
 
@@ -173,7 +194,7 @@ parametro
     ;
 
 decl_const
-    : TK_CONSTANS TK_IDENT TK_DOS_PUNTOS tipo TK_ASIGNA expresion TK_PUNTO_COMA
+    : TK_CONSTANS TK_IDENT TK_DOS_PUNTOS tipo TK_ASIGNA expresion fin_sent
         {
             $$ = nodo_nuevo(NODO_CONSTANTE, $2, 0, @$.first_line);
             agregar_hijo($$, $4);
@@ -190,9 +211,12 @@ tipo
     ;
 
 dims
-    : /* vacio */                          { $$ = NULL; }
-    | dims TK_COR_IZQ expresion TK_COR_DER
-        { $$ = cadena_agregar($1, agregar_hijo(nodo_nuevo(NODO_DIMENSION, NULL, 0, @2.first_line), $3)); }
+    : %empty                                            { $$ = NULL; }
+    | TK_COR_IZQ expresion TK_COR_DER
+        { $$ = agregar_hijo(nodo_nuevo(NODO_DIMENSION, NULL, 0, @1.first_line), $2); }
+    | TK_COR_IZQ expresion TK_COR_DER TK_COR_IZQ expresion TK_COR_DER
+        { $$ = cadena_agregar(agregar_hijo(nodo_nuevo(NODO_DIMENSION, NULL, 0, @1.first_line), $2),
+                              agregar_hijo(nodo_nuevo(NODO_DIMENSION, NULL, 0, @4.first_line), $5)); }
     ;
 
 tipo_param
@@ -202,12 +226,15 @@ tipo_param
     | TK_TIPO_NIHIL dims_param     { $$ = nodo_nuevo(NODO_TIPO, strdup("nihil"), 0, @$.first_line); agregar_hijo($$, $2); }
     ;
 
+/* Un parametro es o totalmente dimensionado (dims) o totalmente abierto:
+ * no se pueden mezclar, y el maximo es de dos dimensiones. */
 dims_param
-    : /* vacio */                                { $$ = NULL; }
-    | dims_param TK_COR_IZQ TK_COR_DER
-        { $$ = cadena_agregar($1, nodo_nuevo(NODO_DIM_ABIERTA, NULL, 0, @2.first_line)); }
-    | dims_param TK_COR_IZQ expresion TK_COR_DER
-        { $$ = cadena_agregar($1, agregar_hijo(nodo_nuevo(NODO_DIMENSION, NULL, 0, @2.first_line), $3)); }
+    : dims
+    | TK_COR_IZQ TK_COR_DER
+        { $$ = nodo_nuevo(NODO_DIM_ABIERTA, NULL, 0, @1.first_line); }
+    | TK_COR_IZQ TK_COR_DER TK_COR_IZQ TK_COR_DER
+        { $$ = cadena_agregar(nodo_nuevo(NODO_DIM_ABIERTA, NULL, 0, @1.first_line),
+                              nodo_nuevo(NODO_DIM_ABIERTA, NULL, 0, @3.first_line)); }
     ;
 
 /* Bloques y sentencias */
@@ -217,7 +244,7 @@ bloque
     ;
 
 sentencias_opt
-    : /* vacio */                  { $$ = NULL; }
+    : %empty                  { $$ = NULL; }
     | sentencias_opt sentencia     { $$ = cadena_agregar($1, $2); }
     ;
 
@@ -233,12 +260,48 @@ sentencia
     | sent_perge                { $$ = $1; }
     | sent_llamada                { $$ = $1; }
     | bloque                       { $$ = $1; }
+    | error TK_PUNTO_COMA          { $$ = NULL; yyerrok; }
+    | error                        { $$ = NULL; }
+    ;
+
+/* Fin de sentencia. Si falta el ';' y lo que sigue empieza otra sentencia (o
+ * cierra el bloque), se inserta virtualmente: se reporta E202 y el analisis
+ * continua sin descartar nada (correccion a nivel de frase). */
+fin_sent
+    : TK_PUNTO_COMA
+    | %empty
+        {
+            if (cierra_sentencia(yychar)) {
+                if (!tok_prev_malo && !sint_suprimido)
+                    diag_error("E202", prev_fin_linea, prev_fin_col, 1,
+                               "falta ';' al final de la sentencia");
+            } else {
+                err_esperaba("';'");
+                YYERROR;
+            }
+        }
+    ;
+
+/* El ')' que cierra la condicion de si/sin/dum/per se corrige igual. */
+cierra_par
+    : TK_PAR_DER
+    | %empty
+        {
+            if (yychar == TK_LLAVE_IZQ) {
+                if (!sint_suprimido)
+                    diag_error("E201", yylloc.first_line, yylloc.first_column, 1,
+                               "se esperaba ')' pero se encontro '{'");
+            } else {
+                err_esperaba("')'");
+                YYERROR;
+            }
+        }
     ;
 
 decl_var
-    : TK_VARIA TK_IDENT TK_DOS_PUNTOS tipo TK_PUNTO_COMA
+    : TK_VARIA TK_IDENT TK_DOS_PUNTOS tipo fin_sent
         { $$ = nodo_nuevo(NODO_VARIABLE, $2, 0, @$.first_line); agregar_hijo($$, $4); }
-    | TK_VARIA TK_IDENT TK_DOS_PUNTOS tipo TK_ASIGNA inicializador TK_PUNTO_COMA
+    | TK_VARIA TK_IDENT TK_DOS_PUNTOS tipo TK_ASIGNA inicializador fin_sent
         { $$ = nodo_nuevo(NODO_VARIABLE, $2, 0, @$.first_line); agregar_hijo($$, $4); agregar_hijo($$, $6); }
     ;
 
@@ -260,7 +323,7 @@ lista_inicializadores
     ;
 
 sent_asignacion
-    : asignacion TK_PUNTO_COMA { $$ = $1; }
+    : asignacion fin_sent { $$ = $1; }
     ;
 
 /* Las asignaciones compuestas se expanden a la forma simple. */
@@ -279,16 +342,29 @@ asignacion
         { $$ = nodo_asignacion($1, "%", $3, @$.first_line); }
     ;
 
+/* Maximo dos indices, igual que el maximo de dimensiones. */
 designador
     : TK_IDENT
         { $$ = nodo_nuevo(NODO_IDENT, $1, 0, @$.first_line); }
-    | designador TK_COR_IZQ expresion TK_COR_DER
-        { $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line), $1); agregar_hijo($$, $3); }
+    | TK_IDENT TK_COR_IZQ expresion TK_COR_DER
+        {
+            Nodo *base = nodo_nuevo(NODO_IDENT, $1, 0, @1.first_line);
+            $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line), base);
+            agregar_hijo($$, $3);
+        }
+    | TK_IDENT TK_COR_IZQ expresion TK_COR_DER TK_COR_IZQ expresion TK_COR_DER
+        {
+            Nodo *base = nodo_nuevo(NODO_IDENT, $1, 0, @1.first_line);
+            Nodo *fila = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @1.first_line), base);
+            agregar_hijo(fila, $3);
+            $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line), fila);
+            agregar_hijo($$, $6);
+        }
     ;
 
 /* 'sin' se convierte en una cadena de ifs anidados. */
 sent_si
-    : TK_SI TK_PAR_IZQ expresion TK_PAR_DER bloque cola_si
+    : TK_SI TK_PAR_IZQ expresion cierra_par bloque cola_si
         {
             $$ = nodo_nuevo(NODO_SI, NULL, 0, @$.first_line);
             agregar_hijo($$, $3);
@@ -298,10 +374,10 @@ sent_si
     ;
 
 cola_si
-    : /* vacio */   { $$ = NULL; }
+    : %empty   { $$ = NULL; }
     | TK_ALITER bloque
         { $$ = $2; }
-    | TK_SIN TK_PAR_IZQ expresion TK_PAR_DER bloque cola_si
+    | TK_SIN TK_PAR_IZQ expresion cierra_par bloque cola_si
         {
             Nodo *interno = nodo_nuevo(NODO_SI, NULL, 0, @1.first_line);
             agregar_hijo(interno, $3);
@@ -312,12 +388,12 @@ cola_si
     ;
 
 sent_dum
-    : TK_DUM TK_PAR_IZQ expresion TK_PAR_DER bloque
+    : TK_DUM TK_PAR_IZQ expresion cierra_par bloque
         { $$ = nodo_nuevo(NODO_DUM, NULL, 0, @$.first_line); agregar_hijo($$, $3); agregar_hijo($$, $5); }
     ;
 
 sent_per
-    : TK_PER TK_PAR_IZQ per_init TK_PUNTO_COMA expresion TK_PUNTO_COMA asignacion TK_PAR_DER bloque
+    : TK_PER TK_PAR_IZQ per_init TK_PUNTO_COMA expresion TK_PUNTO_COMA asignacion cierra_par bloque
         {
             $$ = nodo_nuevo(NODO_PER, NULL, 0, @$.first_line);
             agregar_hijo($$, $3);
@@ -337,20 +413,20 @@ per_init
 sent_redde
     : TK_REDDE TK_PUNTO_COMA
         { $$ = nodo_nuevo(NODO_REDDE, NULL, 0, @$.first_line); }
-    | TK_REDDE expresion TK_PUNTO_COMA
+    | TK_REDDE expresion fin_sent
         { $$ = agregar_hijo(nodo_nuevo(NODO_REDDE, NULL, 0, @$.first_line), $2); }
     ;
 
 sent_rumpe
-    : TK_RUMPE TK_PUNTO_COMA  { $$ = nodo_nuevo(NODO_RUMPE, NULL, 0, @$.first_line); }
+    : TK_RUMPE fin_sent  { $$ = nodo_nuevo(NODO_RUMPE, NULL, 0, @$.first_line); }
     ;
 
 sent_perge
-    : TK_PERGE TK_PUNTO_COMA  { $$ = nodo_nuevo(NODO_PERGE, NULL, 0, @$.first_line); }
+    : TK_PERGE fin_sent  { $$ = nodo_nuevo(NODO_PERGE, NULL, 0, @$.first_line); }
     ;
 
 sent_llamada
-    : llamada_expr TK_PUNTO_COMA { $$ = $1; }
+    : llamada_expr fin_sent { $$ = $1; }
     ;
 
 llamada_expr
@@ -364,7 +440,7 @@ llamada_expr
     ;
 
 lista_argumentos
-    : /* vacio */  { $$ = NULL; }
+    : %empty  { $$ = NULL; }
     | argumentos   { $$ = $1; }
     ;
 
@@ -413,15 +489,29 @@ expresion
     | TK_FALSUM                               { $$ = nodo_nuevo(NODO_BOOLEANO, strdup("falsum"), 0, @$.first_line); }
     ;
 
+/* Maximo dos indices. Una llamada no se puede indexar: las funciones no
+ * retornan arreglos, asi que f(x)[0] no tendria sentido. */
 referencia
+    : nombre_ref
+        { $$ = $1; }
+    | nombre_ref TK_COR_IZQ expresion TK_COR_DER
+        { $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line), $1); agregar_hijo($$, $3); }
+    | nombre_ref TK_COR_IZQ expresion TK_COR_DER TK_COR_IZQ expresion TK_COR_DER
+        {
+            Nodo *fila = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @1.first_line), $1);
+            agregar_hijo(fila, $3);
+            $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line), fila);
+            agregar_hijo($$, $6);
+        }
+    | llamada_expr
+        { $$ = $1; }
+    ;
+
+nombre_ref
     : TK_IDENT
         { $$ = nodo_nuevo(NODO_IDENT, $1, 0, @$.first_line); }
     | TK_IDENT TK_PUNTO TK_IDENT
         { $$ = fijar_modulo(nodo_nuevo(NODO_IDENT, $3, 0, @$.first_line), $1); }
-    | llamada_expr
-        { $$ = $1; }
-    | referencia TK_COR_IZQ expresion TK_COR_DER
-        { $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line), $1); agregar_hijo($$, $3); }
     ;
 
 %%
@@ -475,6 +565,36 @@ static void mostrar_tok(const char *nombre, int es_el_encontrado, char *out, siz
         snprintf(out, cap, "'%s'", nombre);
 }
 
+/* Tokens que pueden venir despues de una sentencia completa: el inicio de otra
+ * sentencia, el cierre del bloque o el inicio de otra declaracion global. Si
+ * falta un ';' y el siguiente token es uno de estos, el ';' se inserta. */
+static int cierra_sentencia(int tok) {
+    switch (tok) {
+        case TK_IDENT: case TK_VARIA: case TK_CONSTANS: case TK_SI: case TK_DUM:
+        case TK_PER: case TK_REDDE: case TK_RUMPE: case TK_PERGE:
+        case TK_LLAVE_IZQ: case TK_LLAVE_DER:
+        case TK_FUNCTIO: case TK_ARROBA: case TK_PRIVATUM:
+        case 0:  /* fin de archivo */
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/* Error "se esperaba X pero se encontro Y" sobre el token de anticipacion. */
+static void err_esperaba(const char *que) {
+    char vista[96];
+    int largo = 1;
+    const char *nombre = (yychar > 0) ? yytname[YYTRANSLATE(yychar)] : "$end";
+
+    if (sint_suprimido) return;
+    mostrar_tok(nombre, 1, vista, sizeof(vista));
+    if (yylloc.last_line == yylloc.first_line && yylloc.last_column > yylloc.first_column)
+        largo = yylloc.last_column - yylloc.first_column;
+    diag_error("E201", yylloc.first_line, yylloc.first_column, largo,
+               "se esperaba %s pero se encontro %s", que, vista);
+}
+
 #define MAX_ESP 8
 
 void yyerror(const char *msg) {
@@ -508,12 +628,9 @@ void yyerror(const char *msg) {
 
     {
         int es_eof = (strcmp(inesp, "$end") == 0 || strcmp(inesp, "end of file") == 0);
+        int ll0, lc0;
         int linea = yylloc.first_line, col = yylloc.first_column, largo = 1;
         const char *codigo = "E201";
-        int es_inicio_sentencia = !strcmp(inesp, "TK_VARIA") || !strcmp(inesp, "TK_CONSTANS") ||
-            !strcmp(inesp, "TK_SI") || !strcmp(inesp, "TK_DUM") || !strcmp(inesp, "TK_PER") ||
-            !strcmp(inesp, "TK_REDDE") || !strcmp(inesp, "TK_RUMPE") || !strcmp(inesp, "TK_PERGE") ||
-            !strcmp(inesp, "TK_LLAVE_DER") || !strcmp(inesp, "TK_IDENT");
 
         if (yylloc.last_line == yylloc.first_line && yylloc.last_column > yylloc.first_column)
             largo = yylloc.last_column - yylloc.first_column;
@@ -529,6 +646,14 @@ void yyerror(const char *msg) {
         if (!strcmp(inesp, "TK_SIN") || !strcmp(inesp, "TK_ALITER")) {
             codigo = "E205";
             snprintf(texto, sizeof(texto), "%s sin un 'si' correspondiente", vista);
+        } else if (!strcmp(inesp, "TK_FUNCTIO") && llave_abierta(&ll0, &lc0)) {
+            /* 'functio' no puede ir dentro de otra funcion: casi seguro falta un '}' */
+            codigo = "E203";
+            linea = ll0; col = lc0; largo = 1;
+            snprintf(texto, sizeof(texto), "'{' abierto en la linea %d nunca se cierra", ll0);
+            if (!sint_suprimido) { diag_error(codigo, linea, col, largo, "%s", texto); }
+            sint_suprimido = 1;
+            return;
         } else if (!strcmp(inesp, "TK_IMPORTA")) {
             codigo = "E206";
             snprintf(texto, sizeof(texto), "las importaciones deben ir antes de cualquier declaracion");
@@ -557,15 +682,10 @@ void yyerror(const char *msg) {
             snprintf(texto, sizeof(texto), "el cuerpo debe ir entre llaves");
         } else if (nesp > 0) {
             snprintf(texto, sizeof(texto), "se esperaba %s pero se encontro %s", lista, vista);
-        } else if (es_inicio_sentencia && yylloc.first_line > prev_fin_linea) {
-            /* Sin lista de esperados, pero el token empieza una sentencia
-             * en otra linea: lo normal es que falte el ';' de la anterior. */
-            codigo = "E202"; linea = prev_fin_linea; col = prev_fin_col; largo = 1;
-            snprintf(texto, sizeof(texto), "falta ';' al final de la sentencia");
         } else {
             snprintf(texto, sizeof(texto), "token inesperado %s", vista);
         }
 
-        diag_error(codigo, linea, col, largo, "%s", texto);
+        if (!sint_suprimido) diag_error(codigo, linea, col, largo, "%s", texto);
     }
 }

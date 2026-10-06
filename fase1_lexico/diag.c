@@ -4,16 +4,33 @@
 #include <string.h>
 #include "diag.h"
 
+#define MAX_ERRORES_DEFECTO 25
+
 static const char *archivo_fuente = "";
 static int total_errores = 0;
+static int total_advertencias = 0;
+static int max_errores = MAX_ERRORES_DEFECTO;
+
+/* E1xx..E4xx corresponden a errores lexicos, sintacticos, semanticos y de enlace. */
+static int por_fase[5] = {0, 0, 0, 0, 0};
 
 void diag_iniciar(const char *archivo) {
     archivo_fuente = archivo;
     total_errores = 0;
+    total_advertencias = 0;
+    memset(por_fase, 0, sizeof(por_fase));
+}
+
+void diag_max_errores(int n) {
+    if (n > 0) max_errores = n;
 }
 
 int diag_errores(void) {
     return total_errores;
+}
+
+int diag_advertencias(void) {
+    return total_advertencias;
 }
 
 static int digitos(int n) {
@@ -22,7 +39,6 @@ static int digitos(int n) {
     return d;
 }
 
-/* Carga una linea del archivo para mostrarla junto al error. */
 static int leer_linea(int n, char *buf, size_t cap) {
     FILE *f = fopen(archivo_fuente, "r");
     if (f == NULL) return 0;
@@ -36,24 +52,19 @@ static int leer_linea(int n, char *buf, size_t cap) {
             buf[len++] = (char)c;
         }
     }
-    if (c == EOF && actual == n && len > 0) encontrada = 1;  /* ultima linea sin salto de linea */
+    if (c == EOF && actual == n && len > 0) encontrada = 1;
     buf[len] = '\0';
     fclose(f);
     return encontrada;
 }
 
-void diag_error(const char *codigo, int linea, int col, int largo,
-                const char *fmt, ...) {
-    va_list ap;
-    total_errores++;
-
+static void imprimir_diag(const char *severidad, const char *codigo, int linea,
+                          int col, int largo, const char *fmt, va_list ap) {
     if (linea > 0 && col > 0)
-        fprintf(stderr, "%s:%d:%d: error[%s]: ", archivo_fuente, linea, col, codigo);
+        fprintf(stderr, "%s:%d:%d: %s[%s]: ", archivo_fuente, linea, col, severidad, codigo);
     else
-        fprintf(stderr, "%s: error[%s]: ", archivo_fuente, codigo);
-    va_start(ap, fmt);
+        fprintf(stderr, "%s: %s[%s]: ", archivo_fuente, severidad, codigo);
     vfprintf(stderr, fmt, ap);
-    va_end(ap);
     fputc('\n', stderr);
 
     char texto[1024];
@@ -63,23 +74,67 @@ void diag_error(const char *codigo, int linea, int col, int largo,
     fprintf(stderr, "%d | %s\n", linea, texto);
     fprintf(stderr, "%*s | ", ancho, "");
 
-    /* Avanza hasta la columna correcta y deja la marca alineada al texto original. */
+    /* Ignora los bytes continuos de UTF-8 al alinear la marca. */
     int pendientes = col - 1;
     const unsigned char *p = (const unsigned char *)texto;
     for (; *p && pendientes > 0; p++) {
-        if ((*p & 0xC0) == 0x80) continue;           /* byte de continuacion de UTF-8 */
+        if ((*p & 0xC0) == 0x80) continue;
         fputc(*p == '\t' ? '\t' : ' ', stderr);
         pendientes--;
     }
-    while (pendientes-- > 0) fputc(' ', stderr);     /* si la columna cae fuera de la linea */
+    while (pendientes-- > 0) fputc(' ', stderr);
 
     if (largo < 1) largo = 1;
     while (largo-- > 0) fputc('^', stderr);
     fputc('\n', stderr);
 }
 
+void diag_error(const char *codigo, int linea, int col, int largo,
+                const char *fmt, ...) {
+    va_list ap;
+    total_errores++;
+    if (codigo != NULL && codigo[0] == 'E' && codigo[1] >= '1' && codigo[1] <= '4')
+        por_fase[codigo[1] - '0']++;
+
+    va_start(ap, fmt);
+    imprimir_diag("error", codigo, linea, col, largo, fmt, ap);
+    va_end(ap);
+
+    if (total_errores >= max_errores) {
+        fprintf(stderr, "\nse alcanzo el maximo de %d errores (--max-errors)\n", max_errores);
+        diag_resumen();
+        exit(1);
+    }
+}
+
+void diag_advertencia(const char *codigo, int linea, int col, int largo,
+                      const char *fmt, ...) {
+    va_list ap;
+    total_advertencias++;
+    va_start(ap, fmt);
+    imprimir_diag("advertencia", codigo, linea, col, largo, fmt, ap);
+    va_end(ap);
+}
+
 void diag_resumen(void) {
-    if (total_errores > 0)
-        fprintf(stderr, "\ncompilacion abortada: %d error%s.\n",
-                total_errores, total_errores == 1 ? "" : "es");
+    static const char *nombres[5] = {"", "lexicos", "sintacticos", "semanticos", "de enlace"};
+    char detalle[160] = "";
+    int i;
+
+    if (total_errores <= 0) return;
+
+    for (i = 1; i <= 4; i++) {
+        char una[48];
+        if (por_fase[i] == 0) continue;
+        snprintf(una, sizeof(una), "%s%d %s", detalle[0] ? ", " : "", por_fase[i], nombres[i]);
+        strncat(detalle, una, sizeof(detalle) - strlen(detalle) - 1);
+    }
+
+    fprintf(stderr, "\ncompilacion abortada: %d error%s", total_errores,
+            total_errores == 1 ? "" : "es");
+    if (detalle[0]) fprintf(stderr, " (%s)", detalle);
+    if (total_advertencias > 0)
+        fprintf(stderr, ", %d advertencia%s", total_advertencias,
+                total_advertencias == 1 ? "" : "s");
+    fprintf(stderr, ".\n");
 }
