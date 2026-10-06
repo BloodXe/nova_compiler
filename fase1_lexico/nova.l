@@ -85,17 +85,11 @@ static int largo_utf8(const char *t) {
     return n;
 }
 
-static int es_ident_inicio(int c) {
-    return isalpha((unsigned char)c) || c == '_';
-}
-
-static int es_ident_seguro(int c) {
-    return isalnum((unsigned char)c) || c == '_';
-}
 %}
 
 %option noyywrap
 %option yylineno
+%option noinput nounput
 
 %x COMENTARIO
 %x CADENA
