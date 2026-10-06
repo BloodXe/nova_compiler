@@ -1,0 +1,4 @@
+functio f() -> integer {
+    varia x : integer = 1
+    redde x;
+}

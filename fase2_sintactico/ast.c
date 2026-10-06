@@ -94,7 +94,6 @@ static const char *nombre_nodo(TipoNodo t) {
         case NODO_FUNCION: return "Funcion";
         case NODO_PARAMETROS: return "Parametros";
         case NODO_PARAMETRO: return "Parametro";
-        case NODO_ANOTACIONES: return "Anotaciones";
         case NODO_ANOTACION: return "Anotacion";
         case NODO_PRIVATUM: return "Privatum";
         case NODO_CONSTANTE: return "Constante";

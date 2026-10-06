@@ -2,6 +2,7 @@
  * Punto de entrada del compilador.
  * Lee las opciones de la linea de comandos y coordina las fases 1 y 2.
  */
+#include <errno.h>
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -129,6 +130,7 @@ static void print_usage(const char *prog) {
         "Uso: %s [opciones] <archivo_fuente> [-o <salida>]\n"
         "  -o <archivo>   Archivo de salida (por defecto: pantalla)\n"
         "  -v             Modo detallado\n"
+        "  --max-errors <n>  Maximo de errores antes de abortar (por omision: 25)\n"
         "  --tokens       Solo Fase 1: tabla de tokens (lexema, token, linea, columna)\n"
         "  -t             Imprime el arbol sintactico (AST)\n"
         "  --sym, -m      Tabla de simbolos (Fase 3, aun no implementada)\n"
@@ -148,6 +150,7 @@ static const struct option opciones_largas[] = {
     {"sym",     no_argument, NULL, 'm'},
     {"ir",      no_argument, NULL, 1001},
     {"version", no_argument, NULL, 1002},
+    {"max-errors", required_argument, NULL, 1003},
     {"help",    no_argument, NULL, 'h'},
     {NULL, 0, NULL, 0}
 };
@@ -162,6 +165,18 @@ int main(int argc, char **argv) {
     while ((opt = getopt_long(argc, argv, "o:vtsmxplh", opciones_largas, NULL)) != -1) {
         switch (opt) {
             case 'h': print_usage(argv[0]); return 0;
+            case 1003: {
+                char *fin = NULL;
+                long n;
+                errno = 0;
+                n = strtol(optarg, &fin, 10);
+                if (errno != 0 || fin == optarg || *fin != '\0' || n < 1 || n > 1000000) {
+                    fprintf(stderr, "novac: valor invalido para --max-errors: '%s' (se espera un entero positivo)\n", optarg);
+                    return 2;
+                }
+                diag_max_errores((int)n);
+                break;
+            }
             case 1002: printf("novac (Nova) - fases 1-2: analisis lexico y sintactico\n"); return 0;
             case 1001: fprintf(stderr, "aviso: --ir (codigo intermedio) es de una fase posterior; se ignora aqui\n"); break;
             case 'o': archivo_salida = optarg; break;
@@ -205,6 +220,9 @@ int main(int argc, char **argv) {
     fclose(yyin);
 
     if (rc != 0 || diag_errores() > 0) {
+        /* Con recuperacion de errores yyparse puede devolver 0 aunque haya
+         * errores: el arbol parcial no sirve, se libera. */
+        liberar_ast(raiz_ast);
         diag_resumen();
         return 1;
     }
