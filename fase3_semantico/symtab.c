@@ -22,6 +22,7 @@ const char* data_type_to_string(DataType type) {
     }
 }
 
+// Registro de funciones intrínsecas de CERBERO-1
 // Inicialización de las funciones intrínsecas del sistema y de la bóveda
 static void register_intrinsics(SymbolTable *st) {
     // 1. longitudo(a) -> integer
