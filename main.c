@@ -1,6 +1,6 @@
 /*
  * Punto de entrada del compilador.
- * Lee las opciones de la linea de comandos y coordina las fases 1 y 2.
+ * Lee las opciones de la linea de comandos y coordina las fases 1, 2 y 3.
  */
 #include <errno.h>
 #include <getopt.h>
@@ -9,6 +9,8 @@
 #include "ast.h"
 #include "diag.h"
 #include "nova.tab.h"
+#include "semantic.h"
+#include "symtab.h"
 
 extern FILE *yyin;
 extern char *yytext;
@@ -19,6 +21,7 @@ int yylex(void);
 static int modo_verbose = 0;
 static int modo_arbol = 0;
 static int modo_lexer = 0;
+static int modo_symtab = 0;
 static const char *archivo_salida = NULL;
 
 /* Mapea cada token a su nombre para la salida del modo de inspeccion. */
@@ -131,11 +134,11 @@ static void print_usage(const char *prog) {
         "  -o <archivo>   Archivo de salida (por defecto: pantalla)\n"
         "  -v             Modo detallado\n"
         "  --max-errors <n>  Maximo de errores antes de abortar (por omision: 25)\n"
-        "  --tokens       Solo Fase 1: tabla de tokens (lexema, token, linea, columna)\n"
+        "  --tokens       Solo Fase 1: tabla de tokens\n"
         "  -t             Imprime el arbol sintactico (AST)\n"
-        "  --sym, -m      Tabla de simbolos (Fase 3, aun no implementada)\n"
+        "  --sym, -m      Muestra la tabla de simbolos (Fase 3)\n"
         "  --ir           Codigo de tres direcciones (Fase 4, aun no implementada)\n"
-        "  -s -x -p       De fases posteriores (se avisan, no se aplican aqui)\n"
+        "  -s -x -p       De fases posteriores\n"
         "  --version      Version\n"
         "  -h, --help     Esta ayuda\n",
         prog);
@@ -177,14 +180,14 @@ int main(int argc, char **argv) {
                 diag_max_errores((int)n);
                 break;
             }
-            case 1002: printf("novac (Nova) - fases 1-2: analisis lexico y sintactico\n"); return 0;
+            case 1002: printf("novac (Nova) - fases 1-3: analisis lexico, sintactico y semantico\n"); return 0;
             case 1001: fprintf(stderr, "aviso: --ir (codigo intermedio) es de una fase posterior; se ignora aqui\n"); break;
             case 'o': archivo_salida = optarg; break;
             case 'v': modo_verbose = 1; break;
             case 't': modo_arbol = 1; break;
             case 'l': modo_lexer = 1; break;
+            case 'm': modo_symtab = 1; break;
             case 's': fprintf(stderr, "aviso: -s (ensamblador) es de una fase posterior; se ignora aqui\n"); break;
-            case 'm': fprintf(stderr, "aviso: -m/--sym (tabla de simbolos) es de una fase posterior; se ignora aqui\n"); break;
             case 'x': fprintf(stderr, "aviso: -x (ensamblar binario) es de una fase posterior; se ignora aqui\n"); break;
             case 'p': fprintf(stderr, "aviso: -p (paquetes de instrucciones) es de una fase posterior; se ignora aqui\n"); break;
             default: print_usage(argv[0]); return 2;
@@ -208,6 +211,7 @@ int main(int argc, char **argv) {
      * Si la bandera --tokens/-l esta activa, se ejecuta solo la Fase 1.
      * En cualquier otro caso, el programa entra a la Fase 2 y construye el AST.
      */
+    // Modo Léxico
     if (modo_lexer) {
         if (modo_verbose) fprintf(stderr, "== Fase 1: Analisis Lexico -- %s ==\n", archivo_fuente);
         int rc = correr_lexer();
@@ -215,6 +219,7 @@ int main(int argc, char **argv) {
         return rc;
     }
 
+    // Fase 2: Análisis Sintáctico
     if (modo_verbose) fprintf(stderr, "== Fase 2: Analisis Sintactico -- %s ==\n", archivo_fuente);
     int rc = yyparse();
     fclose(yyin);
@@ -233,6 +238,7 @@ int main(int argc, char **argv) {
      * Una vez que la fase 2 termina sin errores, se puede pedir la impresion
      * del AST en pantalla o en un archivo de salida.
      */
+    // Imprimir AST si se solicitó (-t)
     if (modo_arbol) {
         FILE *salida = stdout;
         if (archivo_salida != NULL) {
@@ -245,11 +251,24 @@ int main(int argc, char **argv) {
         }
         fprintf(salida, "=== Arbol sintactico (AST) ===\n");
         imprimir_ast(salida, raiz_ast);
-        if (archivo_salida != NULL) fclose(salida);
+        if (archivo_salida != NULL && salida != stdout) fclose(salida);
     }
 
-    if (!modo_verbose && !modo_arbol) {
-        printf("Analisis sintactico completado sin errores.\n");
+    // Fase 3: Análisis Semántico
+    if (modo_verbose) fprintf(stderr, "== Fase 3: Analisis Semantico -- %s ==\n", archivo_fuente);
+
+    SymbolTable *st = NULL;
+    bool sem_ok = semantic_analyze(raiz_ast, &st);
+
+    if (!sem_ok || diag_errores() > 0) {
+        printf("[ERROR] Fallo el Analisis Semantico con %d errores.\n", diag_errores());
+        liberar_ast(raiz_ast);
+        diag_resumen();
+        return 1;
+    }
+
+    if (modo_verbose || (!modo_arbol && !modo_lexer)) {
+        printf("[INFO] Analisis Semantico Exitoso (Fase 3 Completada).\n");
     }
 
     liberar_ast(raiz_ast);
