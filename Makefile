@@ -23,6 +23,9 @@ all: $(BIN)
 $(BIN): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $(OBJS)
 
+# Asegura que nova.tab.h exista antes de intentar compilar cualquier .o 
+$(OBJS): $(PARSE_DIR)/nova.tab.h
+
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 

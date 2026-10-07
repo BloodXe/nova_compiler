@@ -40,7 +40,7 @@ static void analyze_first_pass(Nodo *node) {
         }
 
         if (symtab_lookup_current_scope(st, name)) {
-            diag_error(node->modulo, node->linea, 1, "E302", "Redeclaracion de la funcion '%s' en el mismo ambito", name);
+            diag_error("E302", node->linea, 1, 1, "Redeclaracion de la funcion '%s' en el mismo ambito", name);
         } else {
             symtab_insert_func(st, name, ret_type, is_priv, node->linea, 1);
         }
@@ -49,7 +49,7 @@ static void analyze_first_pass(Nodo *node) {
         DataType type = TYPE_INTEGER;
         
         if (symtab_lookup_current_scope(st, name)) {
-            diag_error(node->modulo, node->linea, 1, "E302", "Redeclaracion de la constante '%s' en el mismo ambito", name);
+            diag_error("E302", node->linea, 1, 1, "Redeclaracion de la constante '%s' en el mismo ambito", name);
         } else {
             int val = 0;
             if (node->hijo && node->hijo->tipo == NODO_ENTERO) {
@@ -83,7 +83,7 @@ static DataType analyze_expression(Nodo *expr) {
             const char *name = expr->texto;
             Symbol *s = symtab_lookup(st, name);
             if (!s) {
-                diag_error(expr->modulo, expr->linea, 1, "E301", "Identificador '%s' no declarado", name);
+                diag_error("E301", expr->linea, 1, 1, "Identificador '%s' no declarado", name);
                 return TYPE_ERROR;
             }
             return s->type;
@@ -107,7 +107,7 @@ static DataType analyze_expression(Nodo *expr) {
                 strcmp(op, ">>") == 0 || strcmp(op, ">>>") == 0) {
                 
                 if (left != TYPE_INTEGER || right != TYPE_INTEGER) {
-                    diag_error(expr->modulo, expr->linea, 1, "E303", "Operador '%s' requiere operandos de tipo 'integer'", op);
+                    diag_error("E303", expr->linea, 1, 1, "Operador '%s' requiere operandos de tipo 'integer'", op);
                     return TYPE_ERROR;
                 }
                 return TYPE_INTEGER;
@@ -116,7 +116,7 @@ static DataType analyze_expression(Nodo *expr) {
             // Operadores relacionales
             if (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0) {
                 if (left != right) {
-                    diag_error(expr->modulo, expr->linea, 1, "E303", "Los operandos de '%s' deben ser del mismo tipo", op);
+                    diag_error("E303", expr->linea, 1, 1, "Los operandos de '%s' deben ser del mismo tipo", op);
                     return TYPE_ERROR;
                 }
                 return TYPE_VERITAS;
@@ -124,7 +124,7 @@ static DataType analyze_expression(Nodo *expr) {
 
             if (strcmp(op, "<") == 0 || strcmp(op, "<=") == 0 || strcmp(op, ">") == 0 || strcmp(op, ">=") == 0) {
                 if (left != TYPE_INTEGER || right != TYPE_INTEGER) {
-                    diag_error(expr->modulo, expr->linea, 1, "E303", "Operador relacional '%s' requiere operandos 'integer'", op);
+                    diag_error("E303", expr->linea, 1, 1, "Operador relacional '%s' requiere operandos 'integer'", op);
                     return TYPE_ERROR;
                 }
                 return TYPE_VERITAS;
@@ -133,7 +133,7 @@ static DataType analyze_expression(Nodo *expr) {
             // Operadores lógicos
             if (strcmp(op, "et") == 0 || strcmp(op, "aut") == 0) {
                 if (left != TYPE_VERITAS || right != TYPE_VERITAS) {
-                    diag_error(expr->modulo, expr->linea, 1, "E303", "Operador logico '%s' requiere operandos 'veritas'", op);
+                    diag_error("E303", expr->linea, 1, 1, "Operador logico '%s' requiere operandos 'veritas'", op);
                     return TYPE_ERROR;
                 }
                 return TYPE_VERITAS;
@@ -149,13 +149,13 @@ static DataType analyze_expression(Nodo *expr) {
 
             if (strcmp(op, "non") == 0) {
                 if (operand != TYPE_VERITAS) {
-                    diag_error(expr->modulo, expr->linea, 1, "E303", "Operador '%s' requiere tipo 'veritas'", op);
+                    diag_error("E303", expr->linea, 1, 1, "Operador '%s' requiere tipo 'veritas'", op);
                     return TYPE_ERROR;
                 }
                 return TYPE_VERITAS;
             } else if (strcmp(op, "-") == 0 || strcmp(op, "~") == 0) {
                 if (operand != TYPE_INTEGER) {
-                    diag_error(expr->modulo, expr->linea, 1, "E303", "Operador '%s' requiere tipo 'integer'", op);
+                    diag_error("E303", expr->linea, 1, 1, "Operador '%s' requiere tipo 'integer'", op);
                     return TYPE_ERROR;
                 }
                 return TYPE_INTEGER;
@@ -167,11 +167,11 @@ static DataType analyze_expression(Nodo *expr) {
             const char *name = expr->texto;
             Symbol *s = symtab_lookup(st, name);
             if (!s) {
-                diag_error(expr->modulo, expr->linea, 1, "E301", "Funcion '%s' no declarada", name);
+                diag_error("E301", expr->linea, 1, 1, "Funcion '%s' no declarada", name);
                 return TYPE_ERROR;
             }
             if (s->kind != SYMBOL_FUNC) {
-                diag_error(expr->modulo, expr->linea, 1, "E313", "'%s' no es una funcion", name);
+                diag_error("E313", expr->linea, 1, 1, "'%s' no es una funcion", name);
                 return TYPE_ERROR;
             }
             return s->return_type;
@@ -195,7 +195,7 @@ static void analyze_statement(Nodo *stmt) {
             }
 
             if (symtab_lookup_current_scope(st, name)) {
-                diag_error(stmt->modulo, stmt->linea, 1, "E302", "Redeclaracion de la variable '%s' en el mismo ambito", name);
+                diag_error("E302", stmt->linea, 1, 1, "Redeclaracion de la variable '%s' en el mismo ambito", name);
             } else {
                 symtab_insert_var(st, name, type, 0, 0, 0, stmt->linea, 1);
             }
@@ -205,7 +205,7 @@ static void analyze_statement(Nodo *stmt) {
             if (init_expr) {
                 DataType init_type = analyze_expression(init_expr);
                 if (init_type != TYPE_ERROR && init_type != type) {
-                    diag_error(stmt->modulo, stmt->linea, 1, "E303", "Tipo incompatible en inicializacion de '%s'", name);
+                    diag_error("E303", stmt->linea, 1, 1, "Tipo incompatible en inicializacion de '%s'", name);
                 }
             }
             break;
@@ -219,13 +219,13 @@ static void analyze_statement(Nodo *stmt) {
             if (name) {
                 Symbol *s = symtab_lookup(st, name);
                 if (!s) {
-                    diag_error(stmt->modulo, stmt->linea, 1, "E301", "Variable '%s' no declarada", name);
+                    diag_error("E301", stmt->linea, 1, 1, "Variable '%s' no declarada", name);
                 } else if (s->kind == SYMBOL_CONST) {
-                    diag_error(stmt->modulo, stmt->linea, 1, "E311", "No se puede asignar a la constante '%s'", name);
+                    diag_error("E311", stmt->linea, 1, 1, "No se puede asignar a la constante '%s'", name);
                 } else {
                     DataType expr_type = analyze_expression(val_expr);
                     if (expr_type != TYPE_ERROR && expr_type != s->type) {
-                        diag_error(stmt->modulo, stmt->linea, 1, "E303", "No se puede asignar a variable de tipo incompatible");
+                        diag_error("E303", stmt->linea, 1, 1, "No se puede asignar a variable de tipo incompatible");
                     }
                 }
             }
@@ -239,7 +239,7 @@ static void analyze_statement(Nodo *stmt) {
 
             DataType cond_type = analyze_expression(cond);
             if (cond_type != TYPE_ERROR && cond_type != TYPE_VERITAS) {
-                diag_error(stmt->modulo, stmt->linea, 1, "E306", "La condicion de 'si' debe ser de tipo 'veritas'");
+                diag_error("E306", stmt->linea, 1, 1, "La condicion de 'si' debe ser de tipo 'veritas'");
             }
             
             symtab_push_scope(st);
@@ -260,7 +260,7 @@ static void analyze_statement(Nodo *stmt) {
 
             DataType cond_type = analyze_expression(cond);
             if (cond_type != TYPE_ERROR && cond_type != TYPE_VERITAS) {
-                diag_error(stmt->modulo, stmt->linea, 1, "E306", "La condicion de 'dum' debe ser de tipo 'veritas'");
+                diag_error("E306", stmt->linea, 1, 1, "La condicion de 'dum' debe ser de tipo 'veritas'");
             }
 
             loop_depth++;
@@ -283,7 +283,7 @@ static void analyze_statement(Nodo *stmt) {
             
             DataType cond_type = analyze_expression(cond);
             if (cond_type != TYPE_ERROR && cond_type != TYPE_VERITAS) {
-                diag_error(stmt->modulo, stmt->linea, 1, "E306", "La condicion de 'per' debe ser de tipo 'veritas'");
+                diag_error("E306", stmt->linea, 1, 1, "La condicion de 'per' debe ser de tipo 'veritas'");
             }
 
             loop_depth++;
@@ -300,12 +300,12 @@ static void analyze_statement(Nodo *stmt) {
             if (ret_expr) {
                 DataType expr_type = analyze_expression(ret_expr);
                 if (current_func_return == TYPE_NIHIL) {
-                    diag_error(stmt->modulo, stmt->linea, 1, "E312", "Funcion 'nihil' no debe retornar valor");
+                    diag_error("E312", stmt->linea, 1, 1, "Funcion 'nihil' no debe retornar valor");
                 } else if (expr_type != TYPE_ERROR && expr_type != current_func_return) {
-                    diag_error(stmt->modulo, stmt->linea, 1, "E312", "Tipo de retorno incorrecto en 'redde'");
+                    diag_error("E312", stmt->linea, 1, 1, "Tipo de retorno incorrecto en 'redde'");
                 }
             } else if (current_func_return != TYPE_NIHIL) {
-                diag_error(stmt->modulo, stmt->linea, 1, "E312", "Se esperaba un valor de retorno en 'redde'");
+                diag_error("E312", stmt->linea, 1, 1, "Se esperaba un valor de retorno en 'redde'");
             }
             break;
         }
@@ -313,7 +313,7 @@ static void analyze_statement(Nodo *stmt) {
         case NODO_RUMPE:
         case NODO_PERGE: {
             if (loop_depth <= 0) {
-                diag_error(stmt->modulo, stmt->linea, 1, "E310", "'rumpe' o 'perge' debe estar dentro de un ciclo");
+                diag_error("E310", stmt->linea, 1, 1, "'rumpe' o 'perge' debe estar dentro de un ciclo");
             }
             break;
         }
@@ -323,7 +323,7 @@ static void analyze_statement(Nodo *stmt) {
     }
 }
 
-// === SEGUNDA PASADA: Analiza los cuerpos de funciones y bloques ===
+// === SEGUNDA PASADA: Analiza cuerpos de funciones y bloques ===
 static void analyze_second_pass(Nodo *node) {
     if (!node) return;
 
@@ -350,7 +350,7 @@ static void analyze_second_pass(Nodo *node) {
 
         // Verificar E309: Rutas de retorno en funciones no-nihil
         if (current_func_return != TYPE_NIHIL && !func_has_return) {
-            diag_error(node->modulo, node->linea, 1, "E309", "Toda ruta de funcion no 'nihil' debe terminar en 'redde'");
+            diag_error("E309", node->linea, 1, 1, "Toda ruta de funcion no 'nihil' debe terminar en 'redde'");
         }
 
         // Guarda el tamaño del marco local en el símbolo de la función
@@ -373,7 +373,7 @@ static void analyze_second_pass(Nodo *node) {
 bool semantic_analyze(Nodo *root, SymbolTable **out_symtab) {
     st = symtab_create();
 
-    // 1. Pasada 1: Recolecta firmas globales
+    // 1. Pasada 1: Recolectar firmas globales
     analyze_first_pass(root);
 
     // 2. Pasada 2: Verifica cuerpos, ámbitos y control de flujo
@@ -383,5 +383,5 @@ bool semantic_analyze(Nodo *root, SymbolTable **out_symtab) {
         *out_symtab = st;
     }
 
-    return (diag_get_error_count() == 0);
+    return (diag_errores() == 0);
 }
