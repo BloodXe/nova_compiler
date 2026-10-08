@@ -16,6 +16,16 @@ static void emit_bundle(FILE *f, const char *s0, const char *s1, const char *s2,
             s4 ? s4 : "-");
 }
 
+// Modo conservador: Emite 2 bundles NOP vacíos tras instrucciones con latencia de datos
+static void emit_latency_nop_padding(FILE *f) {
+    emit_bundle(f, "-", "-", "-", "-", "-");
+    emit_bundle(f, "-", "-", "-", "-", "-");
+}
+
+// Branch delay slot: Emite 1 bundle NOP vacío tras instrucciones de salto
+static void emit_branch_delay_slot(FILE *f) {
+    emit_bundle(f, "-", "-", "-", "-", "-");
+}
 
 // GENERACIÓN PRINCIPAL DE ENSAMBLADOR VLIW
 
