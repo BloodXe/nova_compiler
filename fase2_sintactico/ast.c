@@ -4,7 +4,7 @@
 #include "ast.h"
 
 /* Funciones auxiliares para crear y recorrer el AST. */
-Nodo *nodo_nuevo(TipoNodo tipo, char *texto, long valor, int linea) {
+Nodo *nodo_nuevo(TipoNodo tipo, char *texto, long valor, int linea, int columna) {
     Nodo *n = malloc(sizeof(Nodo));
     if (n == NULL) {
         fprintf(stderr, "Sin memoria\n");
@@ -14,6 +14,7 @@ Nodo *nodo_nuevo(TipoNodo tipo, char *texto, long valor, int linea) {
     n->texto = texto;
     n->valor = valor;
     n->linea = linea;
+    n->columna = columna;
     n->modulo = NULL;
     n->tipo_resuelto = NULL;
     n->hijo = NULL;
@@ -49,22 +50,23 @@ Nodo *cadena_agregar(Nodo *cadena, Nodo *nuevo) {
     return cadena;
 }
 
-Nodo *binario(const char *op, Nodo *izq, Nodo *der, int linea) {
-    Nodo *n = nodo_nuevo(NODO_BINARIO, strdup(op), 0, linea);
+Nodo *binario(const char *op, Nodo *izq, Nodo *der, int linea, int columna) {
+    Nodo *n = nodo_nuevo(NODO_BINARIO, strdup(op), 0, linea, columna);
     agregar_hijo(n, izq);
     agregar_hijo(n, der);
     return n;
 }
 
-Nodo *unario(const char *op, Nodo *operando, int linea) {
-    Nodo *n = nodo_nuevo(NODO_UNARIO, strdup(op), 0, linea);
+Nodo *unario(const char *op, Nodo *operando, int linea, int columna) {
+    Nodo *n = nodo_nuevo(NODO_UNARIO, strdup(op), 0, linea, columna);
     agregar_hijo(n, operando);
     return n;
 }
 
 Nodo *copiar_ast(const Nodo *n) {
     if (n == NULL) return NULL;
-    Nodo *c = nodo_nuevo(n->tipo, n->texto ? strdup(n->texto) : NULL, n->valor, n->linea);
+    Nodo *c = nodo_nuevo(n->tipo, n->texto ? strdup(n->texto) : NULL, n->valor,
+                         n->linea, n->columna);
     if (n->modulo != NULL) c->modulo = strdup(n->modulo);
     if (n->tipo_resuelto != NULL) c->tipo_resuelto = strdup(n->tipo_resuelto);
     Nodo *ultimo = NULL;
@@ -76,9 +78,9 @@ Nodo *copiar_ast(const Nodo *n) {
     return c;
 }
 
-Nodo *nodo_asignacion(Nodo *destino, const char *op, Nodo *valor, int linea) {
-    if (op != NULL) valor = binario(op, copiar_ast(destino), valor, linea);
-    Nodo *n = nodo_nuevo(NODO_ASIGNACION, strdup("="), 0, linea);
+Nodo *nodo_asignacion(Nodo *destino, const char *op, Nodo *valor, int linea, int columna) {
+    if (op != NULL) valor = binario(op, copiar_ast(destino), valor, linea, columna);
+    Nodo *n = nodo_nuevo(NODO_ASIGNACION, strdup("="), 0, linea, columna);
     agregar_hijo(n, destino);
     agregar_hijo(n, valor);
     return n;

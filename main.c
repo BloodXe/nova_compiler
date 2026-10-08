@@ -219,8 +219,16 @@ int main(int argc, char **argv) {
         return rc;
     }
 
-    // Fase 2: Análisis Sintáctico
-    if (modo_verbose) fprintf(stderr, "== Fase 2: Analisis Sintactico -- %s ==\n", archivo_fuente);
+    /*
+     * Fases 1 y 2. El lexer no se corre por separado: bison lo llama con
+     * yylex() a medida que necesita el siguiente token, asi que las dos fases
+     * van entrelazadas. Para ver solo la fase 1 esta --tokens.
+     */
+    if (modo_verbose) {
+        fprintf(stderr, "== Fase 1: Analisis Lexico -- %s ==\n", archivo_fuente);
+        fprintf(stderr, "   (a demanda del parser; --tokens la corre sola)\n");
+        fprintf(stderr, "== Fase 2: Analisis Sintactico -- %s ==\n", archivo_fuente);
+    }
     int rc = yyparse();
     fclose(yyin);
 
@@ -254,23 +262,46 @@ int main(int argc, char **argv) {
         if (archivo_salida != NULL && salida != stdout) fclose(salida);
     }
 
-    // Fase 3: Análisis Semántico
+    /*
+     * Fase 3: analisis semantico. Construye la tabla de simbolos, verifica
+     * tipos, ambitos y flujo, y deja en cada simbolo la direccion de memoria
+     * que la fase 4 necesita para generar codigo de CERBERO.
+     */
     if (modo_verbose) fprintf(stderr, "== Fase 3: Analisis Semantico -- %s ==\n", archivo_fuente);
 
-    SymbolTable *st = NULL;
-    bool sem_ok = semantic_analyze(raiz_ast, &st);
+    SymbolTable *tabla = NULL;
+    bool sem_ok = semantic_analyze(raiz_ast, &tabla);
 
-    if (!sem_ok || diag_errores() > 0) {
-        printf("[ERROR] Fallo el Analisis Semantico con %d errores.\n", diag_errores());
+    if (!sem_ok) {
+        symtab_destroy(tabla);
         liberar_ast(raiz_ast);
         diag_resumen();
         return 1;
     }
 
-    if (modo_verbose || (!modo_arbol && !modo_lexer)) {
-        printf("[INFO] Analisis Semantico Exitoso (Fase 3 Completada).\n");
+    if (modo_verbose) fprintf(stderr, "Fase 3 completada sin errores.\n");
+
+    /* La tabla de simbolos se imprime despues del analisis, cuando ya tiene
+     * los tipos resueltos y las direcciones asignadas. */
+    if (modo_symtab) {
+        FILE *salida = stdout;
+        if (archivo_salida != NULL) {
+            salida = fopen(archivo_salida, modo_arbol ? "a" : "w");
+            if (salida == NULL) {
+                fprintf(stderr, "novac: no se pudo escribir '%s'\n", archivo_salida);
+                symtab_destroy(tabla);
+                liberar_ast(raiz_ast);
+                return 3;
+            }
+        }
+        symtab_dump(salida, tabla);
+        if (archivo_salida != NULL && salida != stdout) fclose(salida);
     }
 
+    /* Las advertencias se resumen aunque la compilacion haya salido bien. */
+    if (diag_advertencias() > 0) diag_resumen();
+
+    symtab_destroy(tabla);
     liberar_ast(raiz_ast);
     return 0;
 }

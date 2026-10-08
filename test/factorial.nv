@@ -16,5 +16,6 @@ functio factorial(n : integer) -> integer {
 
 functio principale() -> integer {
     varia n : integer = 5;
+    scribe(factorial(n));
     redde 0;
 }

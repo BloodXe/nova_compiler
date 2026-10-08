@@ -4,7 +4,10 @@ PARSE_DIR := fase2_sintactico
 SEM_DIR := fase3_semantico
 
 BIN := novac
-CFLAGS := -Wall -Wextra -g -I$(LEX_DIR) -I$(PARSE_DIR) -I$(SEM_DIR)
+# -MMD -MP genera los .d con las dependencias de encabezados: cambiar un .h
+# recompila lo que lo incluye. Sin esto, editar symtab.h dejaba objetos
+# compilados contra estructuras distintas.
+CFLAGS := -Wall -Wextra -g -MMD -MP -I$(LEX_DIR) -I$(PARSE_DIR) -I$(SEM_DIR)
 
 SRCS = main.c \
        $(LEX_DIR)/diag.c \
@@ -15,15 +18,16 @@ SRCS = main.c \
        $(SEM_DIR)/semantic.c
 
 OBJS = $(SRCS:.c=.o)
+DEPS = $(OBJS:.o=.d)
 
-.PHONY: all prueba test clean limpiar
+.PHONY: all prueba test depurar clean limpiar
 
 all: $(BIN)
 
 $(BIN): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $(OBJS)
 
-# Asegura que nova.tab.h exista antes de intentar compilar cualquier .o 
+# Asegura que nova.tab.h exista antes de intentar compilar cualquier .o
 $(OBJS): $(PARSE_DIR)/nova.tab.h
 
 %.o: %.c
@@ -38,7 +42,16 @@ $(LEX_DIR)/lex.yy.c: $(LEX_DIR)/nova.l $(PARSE_DIR)/nova.tab.h $(PARSE_DIR)/ast.
 prueba test: $(BIN)
 	@sh test/run_tests.sh ./$(BIN)
 
+# Depuracion por partes. Sin argumento corre todo; con F se elige el objetivo:
+#   make depurar
+#   make depurar F=fase3
+depurar: $(BIN)
+	@sh depurar.sh "$(F)"
+
 clean:
-	rm -f $(BIN) $(OBJS) $(PARSE_DIR)/nova.tab.* $(PARSE_DIR)/nova.output $(LEX_DIR)/lex.yy.c
+	rm -f $(BIN) $(OBJS) $(DEPS) \
+	      $(PARSE_DIR)/nova.tab.* $(PARSE_DIR)/nova.output $(LEX_DIR)/lex.yy.c
 
 limpiar: clean
+
+-include $(DEPS)

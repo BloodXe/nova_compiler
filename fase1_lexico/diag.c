@@ -121,7 +121,14 @@ void diag_resumen(void) {
     char detalle[160] = "";
     int i;
 
-    if (total_errores <= 0) return;
+    /* Sin errores no hay nada que abortar, pero si hubo advertencias conviene
+     * decir cuantas: el programa compila y aun asi hay algo que revisar. */
+    if (total_errores <= 0) {
+        if (total_advertencias > 0)
+            fprintf(stderr, "\ncompilacion terminada: %d advertencia%s.\n",
+                    total_advertencias, total_advertencias == 1 ? "" : "s");
+        return;
+    }
 
     for (i = 1; i <= 4; i++) {
         char una[48];
