@@ -1,1 +1,4 @@
-constans A : integer = 1; $
+functio principale() -> integer {
+    varia a : integer = 1 $ 2;
+    redde a;
+}

@@ -197,7 +197,9 @@ static int largo_utf8(const char *t) {
 0[xX][0-9A-Fa-f]+ {
     unsigned long valor = strtoul(yytext, NULL, 16);
     if (valor > 0xFFFFFFFFUL) diag_error("E106", yylloc.first_line, yylloc.first_column, yyleng, "el literal no cabe en un integer de 32 bits");
-    yylval.entero = (long)valor;
+    /* integer es de 32 bits con signo: 0xDEADBEEF vale -559038737, igual
+     * que el mismo patron de bits escrito en decimal. */
+    yylval.entero = (long)(int)valor;
     return TK_ENTERO;
 }
 0[xX]           { diag_error("E105", yylloc.first_line, yylloc.first_column, 2, "literal numerico mal formado: '0x'"); }

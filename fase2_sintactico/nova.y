@@ -97,9 +97,9 @@ Nodo *raiz_ast = NULL;
 programa
     : importaciones_opt declaraciones_globales_opt
         {
-            raiz_ast = nodo_nuevo(NODO_PROGRAMA, NULL, 0, 1);
-            agregar_hijo(raiz_ast, agregar_hijo(nodo_nuevo(NODO_IMPORTS, NULL, 0, 1), $1));
-            agregar_hijo(raiz_ast, agregar_hijo(nodo_nuevo(NODO_GLOBALES, NULL, 0, 1), $2));
+            raiz_ast = nodo_nuevo(NODO_PROGRAMA, NULL, 0, 1, 1);
+            agregar_hijo(raiz_ast, agregar_hijo(nodo_nuevo(NODO_IMPORTS, NULL, 0, 1, 1), $1));
+            agregar_hijo(raiz_ast, agregar_hijo(nodo_nuevo(NODO_GLOBALES, NULL, 0, 1, 1), $2));
             $$ = raiz_ast;
         }
     ;
@@ -112,11 +112,11 @@ importaciones_opt
 
 importacion
     : TK_IMPORTA TK_CADENA TK_PUNTO_COMA
-        { $$ = nodo_nuevo(NODO_IMPORT, $2, 0, @$.first_line); }
+        { $$ = nodo_nuevo(NODO_IMPORT, $2, 0, @$.first_line, @$.first_column); }
     | TK_IMPORTA TK_CADENA TK_UT TK_IDENT TK_PUNTO_COMA
         {
-            $$ = nodo_nuevo(NODO_IMPORT, $2, 0, @$.first_line);
-            agregar_hijo($$, nodo_nuevo(NODO_ALIAS, $4, 0, @$.first_line));
+            $$ = nodo_nuevo(NODO_IMPORT, $2, 0, @$.first_line, @$.first_column);
+            agregar_hijo($$, nodo_nuevo(NODO_ALIAS, $4, 0, @$.first_line, @$.first_column));
         }
     ;
 
@@ -150,7 +150,7 @@ declaracion_global
 
 privatum_opt
     : %empty   { $$ = NULL; }
-    | TK_PRIVATUM   { $$ = nodo_nuevo(NODO_PRIVATUM, NULL, 0, @$.first_line); }
+    | TK_PRIVATUM   { $$ = nodo_nuevo(NODO_PRIVATUM, NULL, 0, @$.first_line, @$.first_column); }
     ;
 
 anotaciones
@@ -160,19 +160,19 @@ anotaciones
 
 anotacion
     : TK_ARROBA TK_IDENT
-        { $$ = nodo_nuevo(NODO_ANOTACION, $2, 0, @$.first_line); }
+        { $$ = nodo_nuevo(NODO_ANOTACION, $2, 0, @$.first_line, @$.first_column); }
     | TK_ARROBA TK_IDENT TK_PAR_IZQ TK_CADENA TK_PAR_DER
         {
-            $$ = nodo_nuevo(NODO_ANOTACION, $2, 0, @$.first_line);
-            agregar_hijo($$, nodo_nuevo(NODO_CADENA, $4, 0, @$.first_line));
+            $$ = nodo_nuevo(NODO_ANOTACION, $2, 0, @$.first_line, @$.first_column);
+            agregar_hijo($$, nodo_nuevo(NODO_CADENA, $4, 0, @$.first_line, @$.first_column));
         }
     ;
 
 decl_func
     : TK_FUNCTIO TK_IDENT TK_PAR_IZQ parametros_opt TK_PAR_DER TK_FLECHA tipo bloque
         {
-            $$ = nodo_nuevo(NODO_FUNCION, $2, 0, @$.first_line);
-            agregar_hijo($$, agregar_hijo(nodo_nuevo(NODO_PARAMETROS, NULL, 0, @$.first_line), $4));
+            $$ = nodo_nuevo(NODO_FUNCION, $2, 0, @2.first_line, @2.first_column);
+            agregar_hijo($$, agregar_hijo(nodo_nuevo(NODO_PARAMETROS, NULL, 0, @$.first_line, @$.first_column), $4));
             agregar_hijo($$, $7);
             agregar_hijo($$, $8);
         }
@@ -190,40 +190,44 @@ parametros
 
 parametro
     : TK_IDENT TK_DOS_PUNTOS tipo_param
-        { $$ = nodo_nuevo(NODO_PARAMETRO, $1, 0, @$.first_line); agregar_hijo($$, $3); }
+        { $$ = nodo_nuevo(NODO_PARAMETRO, $1, 0, @$.first_line, @$.first_column); agregar_hijo($$, $3); }
     ;
 
 decl_const
     : TK_CONSTANS TK_IDENT TK_DOS_PUNTOS tipo TK_ASIGNA expresion fin_sent
         {
-            $$ = nodo_nuevo(NODO_CONSTANTE, $2, 0, @$.first_line);
+            $$ = nodo_nuevo(NODO_CONSTANTE, $2, 0, @2.first_line, @2.first_column);
             agregar_hijo($$, $4);
             agregar_hijo($$, $6);
         }
     ;
 
+/* Las declaraciones guardan la posicion del IDENT ($2), no la de la palabra
+ * reservada, para que la marca de los diagnosticos semanticos (E302, E309,
+ * W001, W002) caiga sobre el nombre y no sobre 'functio' o 'varia'. */
+
 /* Tipos y dimensiones */
 tipo
-    : TK_TIPO_INTEGER dims   { $$ = nodo_nuevo(NODO_TIPO, strdup("integer"), 0, @$.first_line); agregar_hijo($$, $2); }
-    | TK_TIPO_VERITAS dims   { $$ = nodo_nuevo(NODO_TIPO, strdup("veritas"), 0, @$.first_line); agregar_hijo($$, $2); }
-    | TK_TIPO_TEXTUS dims    { $$ = nodo_nuevo(NODO_TIPO, strdup("textus"), 0, @$.first_line); agregar_hijo($$, $2); }
-    | TK_TIPO_NIHIL dims     { $$ = nodo_nuevo(NODO_TIPO, strdup("nihil"), 0, @$.first_line); agregar_hijo($$, $2); }
+    : TK_TIPO_INTEGER dims   { $$ = nodo_nuevo(NODO_TIPO, strdup("integer"), 0, @$.first_line, @$.first_column); agregar_hijo($$, $2); }
+    | TK_TIPO_VERITAS dims   { $$ = nodo_nuevo(NODO_TIPO, strdup("veritas"), 0, @$.first_line, @$.first_column); agregar_hijo($$, $2); }
+    | TK_TIPO_TEXTUS dims    { $$ = nodo_nuevo(NODO_TIPO, strdup("textus"), 0, @$.first_line, @$.first_column); agregar_hijo($$, $2); }
+    | TK_TIPO_NIHIL dims     { $$ = nodo_nuevo(NODO_TIPO, strdup("nihil"), 0, @$.first_line, @$.first_column); agregar_hijo($$, $2); }
     ;
 
 dims
     : %empty                                            { $$ = NULL; }
     | TK_COR_IZQ expresion TK_COR_DER
-        { $$ = agregar_hijo(nodo_nuevo(NODO_DIMENSION, NULL, 0, @1.first_line), $2); }
+        { $$ = agregar_hijo(nodo_nuevo(NODO_DIMENSION, NULL, 0, @1.first_line, @1.first_column), $2); }
     | TK_COR_IZQ expresion TK_COR_DER TK_COR_IZQ expresion TK_COR_DER
-        { $$ = cadena_agregar(agregar_hijo(nodo_nuevo(NODO_DIMENSION, NULL, 0, @1.first_line), $2),
-                              agregar_hijo(nodo_nuevo(NODO_DIMENSION, NULL, 0, @4.first_line), $5)); }
+        { $$ = cadena_agregar(agregar_hijo(nodo_nuevo(NODO_DIMENSION, NULL, 0, @1.first_line, @1.first_column), $2),
+                              agregar_hijo(nodo_nuevo(NODO_DIMENSION, NULL, 0, @4.first_line, @4.first_column), $5)); }
     ;
 
 tipo_param
-    : TK_TIPO_INTEGER dims_param   { $$ = nodo_nuevo(NODO_TIPO, strdup("integer"), 0, @$.first_line); agregar_hijo($$, $2); }
-    | TK_TIPO_VERITAS dims_param   { $$ = nodo_nuevo(NODO_TIPO, strdup("veritas"), 0, @$.first_line); agregar_hijo($$, $2); }
-    | TK_TIPO_TEXTUS dims_param    { $$ = nodo_nuevo(NODO_TIPO, strdup("textus"), 0, @$.first_line); agregar_hijo($$, $2); }
-    | TK_TIPO_NIHIL dims_param     { $$ = nodo_nuevo(NODO_TIPO, strdup("nihil"), 0, @$.first_line); agregar_hijo($$, $2); }
+    : TK_TIPO_INTEGER dims_param   { $$ = nodo_nuevo(NODO_TIPO, strdup("integer"), 0, @$.first_line, @$.first_column); agregar_hijo($$, $2); }
+    | TK_TIPO_VERITAS dims_param   { $$ = nodo_nuevo(NODO_TIPO, strdup("veritas"), 0, @$.first_line, @$.first_column); agregar_hijo($$, $2); }
+    | TK_TIPO_TEXTUS dims_param    { $$ = nodo_nuevo(NODO_TIPO, strdup("textus"), 0, @$.first_line, @$.first_column); agregar_hijo($$, $2); }
+    | TK_TIPO_NIHIL dims_param     { $$ = nodo_nuevo(NODO_TIPO, strdup("nihil"), 0, @$.first_line, @$.first_column); agregar_hijo($$, $2); }
     ;
 
 /* Un parametro es o totalmente dimensionado (dims) o totalmente abierto:
@@ -231,16 +235,16 @@ tipo_param
 dims_param
     : dims
     | TK_COR_IZQ TK_COR_DER
-        { $$ = nodo_nuevo(NODO_DIM_ABIERTA, NULL, 0, @1.first_line); }
+        { $$ = nodo_nuevo(NODO_DIM_ABIERTA, NULL, 0, @1.first_line, @1.first_column); }
     | TK_COR_IZQ TK_COR_DER TK_COR_IZQ TK_COR_DER
-        { $$ = cadena_agregar(nodo_nuevo(NODO_DIM_ABIERTA, NULL, 0, @1.first_line),
-                              nodo_nuevo(NODO_DIM_ABIERTA, NULL, 0, @3.first_line)); }
+        { $$ = cadena_agregar(nodo_nuevo(NODO_DIM_ABIERTA, NULL, 0, @1.first_line, @1.first_column),
+                              nodo_nuevo(NODO_DIM_ABIERTA, NULL, 0, @3.first_line, @3.first_column)); }
     ;
 
 /* Bloques y sentencias */
 bloque
     : TK_LLAVE_IZQ sentencias_opt TK_LLAVE_DER
-        { $$ = agregar_hijo(nodo_nuevo(NODO_BLOQUE, NULL, 0, @$.first_line), $2); }
+        { $$ = agregar_hijo(nodo_nuevo(NODO_BLOQUE, NULL, 0, @$.first_line, @$.first_column), $2); }
     ;
 
 sentencias_opt
@@ -300,9 +304,9 @@ cierra_par
 
 decl_var
     : TK_VARIA TK_IDENT TK_DOS_PUNTOS tipo fin_sent
-        { $$ = nodo_nuevo(NODO_VARIABLE, $2, 0, @$.first_line); agregar_hijo($$, $4); }
+        { $$ = nodo_nuevo(NODO_VARIABLE, $2, 0, @2.first_line, @2.first_column); agregar_hijo($$, $4); }
     | TK_VARIA TK_IDENT TK_DOS_PUNTOS tipo TK_ASIGNA inicializador fin_sent
-        { $$ = nodo_nuevo(NODO_VARIABLE, $2, 0, @$.first_line); agregar_hijo($$, $4); agregar_hijo($$, $6); }
+        { $$ = nodo_nuevo(NODO_VARIABLE, $2, 0, @2.first_line, @2.first_column); agregar_hijo($$, $4); agregar_hijo($$, $6); }
     ;
 
 inicializador
@@ -312,9 +316,9 @@ inicializador
 
 lista_valores
     : TK_LLAVE_IZQ TK_LLAVE_DER
-        { $$ = nodo_nuevo(NODO_LISTA_VALORES, NULL, 0, @$.first_line); }
+        { $$ = nodo_nuevo(NODO_LISTA_VALORES, NULL, 0, @$.first_line, @$.first_column); }
     | TK_LLAVE_IZQ lista_inicializadores TK_LLAVE_DER
-        { $$ = agregar_hijo(nodo_nuevo(NODO_LISTA_VALORES, NULL, 0, @$.first_line), $2); }
+        { $$ = agregar_hijo(nodo_nuevo(NODO_LISTA_VALORES, NULL, 0, @$.first_line, @$.first_column), $2); }
     ;
 
 lista_inicializadores
@@ -329,35 +333,35 @@ sent_asignacion
 /* Las asignaciones compuestas se expanden a la forma simple. */
 asignacion
     : designador TK_ASIGNA expresion
-        { $$ = nodo_asignacion($1, NULL, $3, @$.first_line); }
+        { $$ = nodo_asignacion($1, NULL, $3, @$.first_line, @$.first_column); }
     | designador TK_ASIGNA_MAS expresion
-        { $$ = nodo_asignacion($1, "+", $3, @$.first_line); }
+        { $$ = nodo_asignacion($1, "+", $3, @$.first_line, @$.first_column); }
     | designador TK_ASIGNA_MENOS expresion
-        { $$ = nodo_asignacion($1, "-", $3, @$.first_line); }
+        { $$ = nodo_asignacion($1, "-", $3, @$.first_line, @$.first_column); }
     | designador TK_ASIGNA_POR expresion
-        { $$ = nodo_asignacion($1, "*", $3, @$.first_line); }
+        { $$ = nodo_asignacion($1, "*", $3, @$.first_line, @$.first_column); }
     | designador TK_ASIGNA_ENTRE expresion
-        { $$ = nodo_asignacion($1, "/", $3, @$.first_line); }
+        { $$ = nodo_asignacion($1, "/", $3, @$.first_line, @$.first_column); }
     | designador TK_ASIGNA_MODULO expresion
-        { $$ = nodo_asignacion($1, "%", $3, @$.first_line); }
+        { $$ = nodo_asignacion($1, "%", $3, @$.first_line, @$.first_column); }
     ;
 
 /* Maximo dos indices, igual que el maximo de dimensiones. */
 designador
     : TK_IDENT
-        { $$ = nodo_nuevo(NODO_IDENT, $1, 0, @$.first_line); }
+        { $$ = nodo_nuevo(NODO_IDENT, $1, 0, @$.first_line, @$.first_column); }
     | TK_IDENT TK_COR_IZQ expresion TK_COR_DER
         {
-            Nodo *base = nodo_nuevo(NODO_IDENT, $1, 0, @1.first_line);
-            $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line), base);
+            Nodo *base = nodo_nuevo(NODO_IDENT, $1, 0, @1.first_line, @1.first_column);
+            $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line, @$.first_column), base);
             agregar_hijo($$, $3);
         }
     | TK_IDENT TK_COR_IZQ expresion TK_COR_DER TK_COR_IZQ expresion TK_COR_DER
         {
-            Nodo *base = nodo_nuevo(NODO_IDENT, $1, 0, @1.first_line);
-            Nodo *fila = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @1.first_line), base);
+            Nodo *base = nodo_nuevo(NODO_IDENT, $1, 0, @1.first_line, @1.first_column);
+            Nodo *fila = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @1.first_line, @1.first_column), base);
             agregar_hijo(fila, $3);
-            $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line), fila);
+            $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line, @$.first_column), fila);
             agregar_hijo($$, $6);
         }
     ;
@@ -366,7 +370,7 @@ designador
 sent_si
     : TK_SI TK_PAR_IZQ expresion cierra_par bloque cola_si
         {
-            $$ = nodo_nuevo(NODO_SI, NULL, 0, @$.first_line);
+            $$ = nodo_nuevo(NODO_SI, NULL, 0, @$.first_line, @$.first_column);
             agregar_hijo($$, $3);
             agregar_hijo($$, $5);
             agregar_hijo($$, $6);
@@ -379,23 +383,23 @@ cola_si
         { $$ = $2; }
     | TK_SIN TK_PAR_IZQ expresion cierra_par bloque cola_si
         {
-            Nodo *interno = nodo_nuevo(NODO_SI, NULL, 0, @1.first_line);
+            Nodo *interno = nodo_nuevo(NODO_SI, NULL, 0, @1.first_line, @1.first_column);
             agregar_hijo(interno, $3);
             agregar_hijo(interno, $5);
             agregar_hijo(interno, $6);
-            $$ = agregar_hijo(nodo_nuevo(NODO_BLOQUE, NULL, 0, @1.first_line), interno);
+            $$ = agregar_hijo(nodo_nuevo(NODO_BLOQUE, NULL, 0, @1.first_line, @1.first_column), interno);
         }
     ;
 
 sent_dum
     : TK_DUM TK_PAR_IZQ expresion cierra_par bloque
-        { $$ = nodo_nuevo(NODO_DUM, NULL, 0, @$.first_line); agregar_hijo($$, $3); agregar_hijo($$, $5); }
+        { $$ = nodo_nuevo(NODO_DUM, NULL, 0, @$.first_line, @$.first_column); agregar_hijo($$, $3); agregar_hijo($$, $5); }
     ;
 
 sent_per
     : TK_PER TK_PAR_IZQ per_init TK_PUNTO_COMA expresion TK_PUNTO_COMA asignacion cierra_par bloque
         {
-            $$ = nodo_nuevo(NODO_PER, NULL, 0, @$.first_line);
+            $$ = nodo_nuevo(NODO_PER, NULL, 0, @$.first_line, @$.first_column);
             agregar_hijo($$, $3);
             agregar_hijo($$, $5);
             agregar_hijo($$, $7);
@@ -405,24 +409,24 @@ sent_per
 
 per_init
     : TK_VARIA TK_IDENT TK_DOS_PUNTOS tipo TK_ASIGNA expresion
-        { $$ = nodo_nuevo(NODO_VARIABLE, $2, 0, @$.first_line); agregar_hijo($$, $4); agregar_hijo($$, $6); }
+        { $$ = nodo_nuevo(NODO_VARIABLE, $2, 0, @2.first_line, @2.first_column); agregar_hijo($$, $4); agregar_hijo($$, $6); }
     | asignacion
         { $$ = $1; }
     ;
 
 sent_redde
     : TK_REDDE TK_PUNTO_COMA
-        { $$ = nodo_nuevo(NODO_REDDE, NULL, 0, @$.first_line); }
+        { $$ = nodo_nuevo(NODO_REDDE, NULL, 0, @$.first_line, @$.first_column); }
     | TK_REDDE expresion fin_sent
-        { $$ = agregar_hijo(nodo_nuevo(NODO_REDDE, NULL, 0, @$.first_line), $2); }
+        { $$ = agregar_hijo(nodo_nuevo(NODO_REDDE, NULL, 0, @$.first_line, @$.first_column), $2); }
     ;
 
 sent_rumpe
-    : TK_RUMPE fin_sent  { $$ = nodo_nuevo(NODO_RUMPE, NULL, 0, @$.first_line); }
+    : TK_RUMPE fin_sent  { $$ = nodo_nuevo(NODO_RUMPE, NULL, 0, @$.first_line, @$.first_column); }
     ;
 
 sent_perge
-    : TK_PERGE fin_sent  { $$ = nodo_nuevo(NODO_PERGE, NULL, 0, @$.first_line); }
+    : TK_PERGE fin_sent  { $$ = nodo_nuevo(NODO_PERGE, NULL, 0, @$.first_line, @$.first_column); }
     ;
 
 sent_llamada
@@ -431,10 +435,10 @@ sent_llamada
 
 llamada_expr
     : TK_IDENT TK_PAR_IZQ lista_argumentos TK_PAR_DER
-        { $$ = nodo_nuevo(NODO_LLAMADA, $1, 0, @$.first_line); agregar_hijo($$, $3); }
+        { $$ = nodo_nuevo(NODO_LLAMADA, $1, 0, @$.first_line, @$.first_column); agregar_hijo($$, $3); }
     | TK_IDENT TK_PUNTO TK_IDENT TK_PAR_IZQ lista_argumentos TK_PAR_DER
         {
-            $$ = fijar_modulo(nodo_nuevo(NODO_LLAMADA, $3, 0, @$.first_line), $1);
+            $$ = fijar_modulo(nodo_nuevo(NODO_LLAMADA, $3, 0, @$.first_line, @$.first_column), $1);
             agregar_hijo($$, $5);
         }
     ;
@@ -447,7 +451,7 @@ lista_argumentos
 argumentos
     : expresion
         {
-            $$ = nodo_nuevo(NODO_ARGUMENTOS, NULL, 0, @$.first_line);
+            $$ = nodo_nuevo(NODO_ARGUMENTOS, NULL, 0, @$.first_line, @$.first_column);
             agregar_hijo($$, $1);
         }
     | argumentos TK_COMA expresion
@@ -459,34 +463,34 @@ argumentos
 
 /* Expresiones. La precedencia la resuelve Bison con las reglas %left/%right. */
 expresion
-    : expresion TK_AUT expresion         { $$ = binario("aut", $1, $3, @$.first_line); }
-    | expresion TK_ET expresion          { $$ = binario("et", $1, $3, @$.first_line); }
-    | expresion TK_BARRA expresion       { $$ = binario("|", $1, $3, @$.first_line); }
-    | expresion TK_XOR expresion         { $$ = binario("^", $1, $3, @$.first_line); }
-    | expresion TK_AMPERSAND expresion   { $$ = binario("&", $1, $3, @$.first_line); }
-    | expresion TK_IGUAL expresion       { $$ = binario("==", $1, $3, @$.first_line); }
-    | expresion TK_DIFERENTE expresion   { $$ = binario("!=", $1, $3, @$.first_line); }
-    | expresion TK_MENOR expresion       { $$ = binario("<", $1, $3, @$.first_line); }
-    | expresion TK_MENOR_IGUAL expresion { $$ = binario("<=", $1, $3, @$.first_line); }
-    | expresion TK_MAYOR expresion       { $$ = binario(">", $1, $3, @$.first_line); }
-    | expresion TK_MAYOR_IGUAL expresion { $$ = binario(">=", $1, $3, @$.first_line); }
-    | expresion TK_DESP_IZQ expresion    { $$ = binario("<<", $1, $3, @$.first_line); }
-    | expresion TK_DESP_DER expresion    { $$ = binario(">>", $1, $3, @$.first_line); }
-    | expresion TK_DESP_LOG expresion    { $$ = binario(">>>", $1, $3, @$.first_line); }
-    | expresion TK_MAS expresion         { $$ = binario("+", $1, $3, @$.first_line); }
-    | expresion TK_MENOS expresion       { $$ = binario("-", $1, $3, @$.first_line); }
-    | expresion TK_POR expresion         { $$ = binario("*", $1, $3, @$.first_line); }
-    | expresion TK_ENTRE expresion       { $$ = binario("/", $1, $3, @$.first_line); }
-    | expresion TK_MODULO expresion      { $$ = binario("%", $1, $3, @$.first_line); }
-    | TK_MENOS expresion %prec UMENOS    { $$ = unario("-", $2, @$.first_line); }
-    | TK_NON expresion                   { $$ = unario("non", $2, @$.first_line); }
-    | TK_NOT expresion                   { $$ = unario("~", $2, @$.first_line); }
+    : expresion TK_AUT expresion         { $$ = binario("aut", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_ET expresion          { $$ = binario("et", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_BARRA expresion       { $$ = binario("|", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_XOR expresion         { $$ = binario("^", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_AMPERSAND expresion   { $$ = binario("&", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_IGUAL expresion       { $$ = binario("==", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_DIFERENTE expresion   { $$ = binario("!=", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_MENOR expresion       { $$ = binario("<", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_MENOR_IGUAL expresion { $$ = binario("<=", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_MAYOR expresion       { $$ = binario(">", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_MAYOR_IGUAL expresion { $$ = binario(">=", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_DESP_IZQ expresion    { $$ = binario("<<", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_DESP_DER expresion    { $$ = binario(">>", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_DESP_LOG expresion    { $$ = binario(">>>", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_MAS expresion         { $$ = binario("+", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_MENOS expresion       { $$ = binario("-", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_POR expresion         { $$ = binario("*", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_ENTRE expresion       { $$ = binario("/", $1, $3, @$.first_line, @$.first_column); }
+    | expresion TK_MODULO expresion      { $$ = binario("%", $1, $3, @$.first_line, @$.first_column); }
+    | TK_MENOS expresion %prec UMENOS    { $$ = unario("-", $2, @$.first_line, @$.first_column); }
+    | TK_NON expresion                   { $$ = unario("non", $2, @$.first_line, @$.first_column); }
+    | TK_NOT expresion                   { $$ = unario("~", $2, @$.first_line, @$.first_column); }
     | TK_PAR_IZQ expresion TK_PAR_DER    { $$ = $2; }
     | referencia                          { $$ = $1; }
-    | TK_ENTERO                            { $$ = nodo_nuevo(NODO_ENTERO, NULL, $1, @$.first_line); }
-    | TK_CADENA                             { $$ = nodo_nuevo(NODO_CADENA, $1, 0, @$.first_line); }
-    | TK_VERUM                               { $$ = nodo_nuevo(NODO_BOOLEANO, strdup("verum"), 1, @$.first_line); }
-    | TK_FALSUM                               { $$ = nodo_nuevo(NODO_BOOLEANO, strdup("falsum"), 0, @$.first_line); }
+    | TK_ENTERO                            { $$ = nodo_nuevo(NODO_ENTERO, NULL, $1, @$.first_line, @$.first_column); }
+    | TK_CADENA                             { $$ = nodo_nuevo(NODO_CADENA, $1, 0, @$.first_line, @$.first_column); }
+    | TK_VERUM                               { $$ = nodo_nuevo(NODO_BOOLEANO, strdup("verum"), 1, @$.first_line, @$.first_column); }
+    | TK_FALSUM                               { $$ = nodo_nuevo(NODO_BOOLEANO, strdup("falsum"), 0, @$.first_line, @$.first_column); }
     ;
 
 /* Maximo dos indices. Una llamada no se puede indexar: las funciones no
@@ -495,12 +499,12 @@ referencia
     : nombre_ref
         { $$ = $1; }
     | nombre_ref TK_COR_IZQ expresion TK_COR_DER
-        { $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line), $1); agregar_hijo($$, $3); }
+        { $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line, @$.first_column), $1); agregar_hijo($$, $3); }
     | nombre_ref TK_COR_IZQ expresion TK_COR_DER TK_COR_IZQ expresion TK_COR_DER
         {
-            Nodo *fila = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @1.first_line), $1);
+            Nodo *fila = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @1.first_line, @1.first_column), $1);
             agregar_hijo(fila, $3);
-            $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line), fila);
+            $$ = agregar_hijo(nodo_nuevo(NODO_INDICE, NULL, 0, @$.first_line, @$.first_column), fila);
             agregar_hijo($$, $6);
         }
     | llamada_expr
@@ -509,9 +513,9 @@ referencia
 
 nombre_ref
     : TK_IDENT
-        { $$ = nodo_nuevo(NODO_IDENT, $1, 0, @$.first_line); }
+        { $$ = nodo_nuevo(NODO_IDENT, $1, 0, @$.first_line, @$.first_column); }
     | TK_IDENT TK_PUNTO TK_IDENT
-        { $$ = fijar_modulo(nodo_nuevo(NODO_IDENT, $3, 0, @$.first_line), $1); }
+        { $$ = fijar_modulo(nodo_nuevo(NODO_IDENT, $3, 0, @$.first_line, @$.first_column), $1); }
     ;
 
 %%

@@ -1,4 +1,4 @@
-functio f() -> integer {
-    varia x : integer = 1
-    redde x;
+functio principale() -> integer {
+    varia a : integer = 1
+    redde a;
 }

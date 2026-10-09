@@ -1,3 +1,4 @@
-constans A : integer = 1;
+functio principale() -> integer {
+    redde 0;
+}
 #{ este comentario nunca cierra
-constans B : integer = 2;

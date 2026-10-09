@@ -1,4 +1,2 @@
-functio f() -> integer {
-    dum (verum) redde 0;
-    redde 1;
-}
+functio principale() -> integer
+    redde 0;

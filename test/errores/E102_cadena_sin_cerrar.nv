@@ -1,1 +1,4 @@
-constans A : textus = "sin cerrar;
+functio principale() -> integer {
+    scribe("sin cierre);
+    redde 0;
+}

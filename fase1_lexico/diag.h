@@ -15,6 +15,20 @@ void diag_error(const char *codigo, int linea, int col, int largo,
 void diag_advertencia(const char *codigo, int linea, int col, int largo,
                       const char *fmt, ...);
 
+/*
+ * Control de advertencias desde la linea de comandos.
+ *
+ * Todas las W0xx estan activas por omision, asi que -Wall las reafirma y
+ * deshace cualquier -Wno-... anterior. -w las silencia todas y -Wno-W001
+ * silencia una sola. -Werror hace que cada advertencia que si se emita
+ * cuente como error y aborte la compilacion, que es lo que promete el
+ * documento.
+ */
+void diag_warn_todas(void);                      /* -Wall */
+void diag_warn_ninguna(void);                    /* -w */
+int  diag_warn_desactivar(const char *codigo);   /* -Wno-W001; 0 si no existe */
+void diag_warn_como_error(void);                 /* -Werror */
+
 /* Cuantos errores se reportaron hasta ahora. */
 int diag_errores(void);
 

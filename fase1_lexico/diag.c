@@ -14,6 +14,43 @@ static int max_errores = MAX_ERRORES_DEFECTO;
 /* E1xx..E4xx corresponden a errores lexicos, sintacticos, semanticos y de enlace. */
 static int por_fase[5] = {0, 0, 0, 0, 0};
 
+/*
+ * Advertencias: un bit por codigo W0xx, todas encendidas al arrancar.
+ * El bit 0 es W001, el bit 1 es W002, y asi. 32 bits alcanzan de sobra para
+ * las siete que define el documento y deja espacio para las que se agreguen.
+ */
+#define MAX_WARN 32
+static unsigned warn_activas = 0xFFFFFFFFu;
+static int warn_es_error = 0;
+
+/* Devuelve el indice de bit de un codigo "W003", o -1 si no tiene esa forma. */
+static int indice_warn(const char *codigo) {
+    int n;
+    if (codigo == NULL || (codigo[0] != 'W' && codigo[0] != 'w')) return -1;
+    n = atoi(codigo + 1);
+    if (n < 1 || n > MAX_WARN) return -1;
+    return n - 1;
+}
+
+void diag_warn_todas(void) {
+    warn_activas = 0xFFFFFFFFu;
+}
+
+void diag_warn_ninguna(void) {
+    warn_activas = 0u;
+}
+
+int diag_warn_desactivar(const char *codigo) {
+    int i = indice_warn(codigo);
+    if (i < 0) return 0;
+    warn_activas &= ~(1u << i);
+    return 1;
+}
+
+void diag_warn_como_error(void) {
+    warn_es_error = 1;
+}
+
 void diag_iniciar(const char *archivo) {
     archivo_fuente = archivo;
     total_errores = 0;
@@ -110,10 +147,31 @@ void diag_error(const char *codigo, int linea, int col, int largo,
 void diag_advertencia(const char *codigo, int linea, int col, int largo,
                       const char *fmt, ...) {
     va_list ap;
+    int i = indice_warn(codigo);
+
+    /* Silenciada con -w o con -Wno-W00n: no se imprime ni se cuenta. */
+    if (i >= 0 && !(warn_activas & (1u << i))) return;
+
     total_advertencias++;
     va_start(ap, fmt);
-    imprimir_diag("advertencia", codigo, linea, col, largo, fmt, ap);
+    imprimir_diag(warn_es_error ? "error" : "advertencia",
+                  codigo, linea, col, largo, fmt, ap);
     va_end(ap);
+
+    /*
+     * Con -Werror la advertencia cuenta como error. Se le asigna la fase 3
+     * porque todas las W0xx las emite el analisis semantico, que es donde el
+     * documento las ubica.
+     */
+    if (warn_es_error) {
+        total_errores++;
+        por_fase[3]++;
+        if (total_errores >= max_errores) {
+            fprintf(stderr, "\nse alcanzo el maximo de %d errores (--max-errors)\n", max_errores);
+            diag_resumen();
+            exit(1);
+        }
+    }
 }
 
 void diag_resumen(void) {
@@ -121,7 +179,14 @@ void diag_resumen(void) {
     char detalle[160] = "";
     int i;
 
-    if (total_errores <= 0) return;
+    /* Sin errores no hay nada que abortar, pero si hubo advertencias conviene
+     * decir cuantas: el programa compila y aun asi hay algo que revisar. */
+    if (total_errores <= 0) {
+        if (total_advertencias > 0)
+            fprintf(stderr, "\ncompilacion terminada: %d advertencia%s.\n",
+                    total_advertencias, total_advertencias == 1 ? "" : "s");
+        return;
+    }
 
     for (i = 1; i <= 4; i++) {
         char una[48];
@@ -133,8 +198,12 @@ void diag_resumen(void) {
     fprintf(stderr, "\ncompilacion abortada: %d error%s", total_errores,
             total_errores == 1 ? "" : "es");
     if (detalle[0]) fprintf(stderr, " (%s)", detalle);
-    if (total_advertencias > 0)
+    /* Con -Werror las advertencias ya estan contadas arriba como errores, asi
+     * que repetirlas aparte haria parecer que son el doble. */
+    if (total_advertencias > 0 && !warn_es_error)
         fprintf(stderr, ", %d advertencia%s", total_advertencias,
                 total_advertencias == 1 ? "" : "s");
+    if (total_advertencias > 0 && warn_es_error)
+        fprintf(stderr, " (%d por -Werror)", total_advertencias);
     fprintf(stderr, ".\n");
 }
