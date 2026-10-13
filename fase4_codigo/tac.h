@@ -83,6 +83,9 @@ typedef struct TACInst {
     long valor;            /* TAC_CONST */
     int aux;               /* posicion, dimension, palabra, cantidad */
     int linea;             /* para los diagnosticos de la fase 4 */
+
+    bool is_short;         /* true si se planificó como instrucción destructiva (16 bits) */
+
     struct TACInst *next;
 } TACInst;
 

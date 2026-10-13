@@ -152,30 +152,79 @@ static Bundle* create_empty_bundle(int cycle) {
     return b;
 }
 
+// Verifica si la operación ALU es conmutativa (importante para reorganizar operandos)
+static bool is_commutative(TACOp op) {
+    return (op == TAC_ADD || op == TAC_MUL || op == TAC_AND || 
+            op == TAC_OR  || op == TAC_XOR);
+}
+
+// Verifica si la instrucción puede ejecutarse en el Slot 3 y ajusta sus operandos
+static bool try_convert_to_short_alu(TACInst* instr) {
+    if (instr->result == NULL) return false;
+
+    // Condición ideal: El destino ya es el primer operando fuente (r1 = r1 + r2)
+    if (instr->arg1 != NULL && strcmp(instr->result, instr->arg1) == 0) {
+        instr->is_short = true;
+        return true; 
+    }
+    
+    // Condición conmutativa: El destino es el segundo operando (r1 = r2 + r1)
+    // Se puede intercambiar los fuentes para que calce en el formato destructivo.
+    if (is_commutative(instr->op) && instr->arg2 != NULL && strcmp(instr->result, instr->arg2) == 0) {
+        char* temp = instr->arg1;
+        instr->arg1 = instr->arg2;
+        instr->arg2 = temp;
+        
+        instr->is_short = true;
+        return true;
+    }
+    
+    // Si la instrucción no es destructiva ni conmutativamente adaptable, 
+    // requeriría emitir un 'MOV' extra, lo cual rompe el flujo del scheduler actual.
+    return false;
+}
+
 // Lógica de asignación a los Slots VLIW 
 static int assign_to_slot(TACInst* instr, Bundle* bundle) {
     if (instr == NULL || instr->op == TAC_NOP) return -1;
 
     if (is_alu(instr)) {
-        if (bundle->slots[0] == NULL) return 0;      // S0: ALU-0 (Única que escribe banderas))
-        if (bundle->slots[1] == NULL) return 1;      // S1: ALU-1  
-        // La conversión a ShortALU (S3) si S0 y S1 están ocupados se implementará aquí
+        // Intento 1: ALU-0 completa (S0)
+        if (bundle->slots[0] == NULL) {
+            instr->is_short = false;
+            return 0;
+        }
+        // Intento 2: ALU-1 completa (S1)
+        if (bundle->slots[1] == NULL) {
+            instr->is_short = false;
+            return 1;
+        }
+        
+        // Intento 3 - ALU Corta (S3)
+        // Si S0 y S1 están ocupados, y el slot S3 no está siendo usado por Criptografía,
+        // se intenta convertir la instrucción a su formato destructivo de 16 bits.
+        if (bundle->slots[3] == NULL && try_convert_to_short_alu(instr)) {
+            return 3; 
+        }
+        
+        // No hay slots compatibles disponibles en este ciclo
         return -1; 
     }
     else if (is_lsu(instr)) {
-        if (bundle->slots[2] == NULL) return 2;      // S2: LSU (Load/Store) 
+        if (bundle->slots[2] == NULL) return 2;      // S2: LSU (Load/Store)
         return -1;
     }
     else if (is_crp(instr)) {
-        if (bundle->slots[3] == NULL) return 3;      // S3: Criptografía / Bóveda / ALU Corta
+        // La Criptografía tiene prioridad en S3 si hay conflicto con la ShortALU
+        if (bundle->slots[3] == NULL) return 3;      // S3: Criptografía (Ej. AES)
         return -1;
     }
     else if (is_bru(instr)) {
         if (bundle->slots[4] == NULL) return 4;      // S4: Branch Unit (Saltos/Retornos)
         return -1;
     }
- 
-   // Fallback por defecto a S0 para pseudo-instrucciones si forman parte del DAG    
+    
+    // Fallback por defecto a S0 para pseudo-instrucciones si forman parte del DAG
     return (bundle->slots[0] == NULL) ? 0 : -1; 
 }
 

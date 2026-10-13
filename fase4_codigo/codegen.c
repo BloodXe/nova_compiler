@@ -411,6 +411,27 @@ static void mover(int rd, int rs) {
     emitir(S_ALU0, t, rd, rs, -1);
 }
 
+static void emit_alu_instruction_vliw(TACInst* instr, const char* mnemonico, int rd, int rs1, int rs2, int slot) {
+    char t[64];
+    
+    // Si la instrucción se programó en el Slot 3 (S_CRP) o tiene la bandera is_short
+    if (slot == S_CRP || instr->is_short) {
+        // Emisión destructiva de 16 bits para la ALU corta (ej. add.s r1, r2)
+        // El registro de destino (rd) se sobreescribe usando rd y rs2 como fuentes
+        snprintf(t, sizeof(t), "%s.s r%d, r%d", mnemonico, rd, rs2);
+        
+        // Se emite en el slot criptográfico (S3)
+        emitir(S_CRP, t, rd, rd, rs2);
+    } else {
+        // Emisión completa de 32 bits (S0 o S1)
+        snprintf(t, sizeof(t), "%s r%d, r%d, r%d", mnemonico, rd, rs1, rs2);
+        
+        // Se emite en el slot correspondiente (típicamente S_ALU0 o S_ALU1)
+        emitir(slot, t, rd, rs1, rs2);
+    }
+}
+
+
 /* Carga de una constante. imm19 es con signo; si no cabe hay que construir
  * el valor con MOVI y luego MOVH, en ese orden obligatorio. */
 static void cargar_const(int rd, long v) {
