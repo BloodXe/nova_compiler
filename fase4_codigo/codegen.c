@@ -1252,6 +1252,13 @@ static void imprimir_datos_texto(TACList *tac) {
     fprintf(sal, "__out_buf:\n    .space %d\n\n", 0x4000 - DIR_OUT_BUF);
 }
 
+static bool is_bundle_empty_cg(const Bundle *b) {
+    for (int i = 0; i < 5; i++) {
+        if (b->s[i] != NULL) return false;
+    }
+    return true;
+}
+
 static void imprimir_codigo_texto(void) {
     int ie = 0, in = 0;
     for (int b = 0; b <= n_bundles; b++) {
@@ -1276,11 +1283,20 @@ static void imprimir_codigo_texto(void) {
             if (inicio_seguro >= 0) fprintf(sal, "    .endsecure\n");
             break;
         }
+        
         const Bundle *x = &prog[b];
-        fprintf(sal, "    %-26s | %-10s | %-22s | %-18s | %-16s ;\n",
-                x->s[0] ? x->s[0] : "-", x->s[1] ? x->s[1] : "-",
-                x->s[2] ? x->s[2] : "-", x->s[3] ? x->s[3] : "-",
-                x->s[4] ? x->s[4] : "-");
+        
+        // REGLA: Emisión de NOPs explícitos en el ensamblador
+        if (is_bundle_empty_cg(x)) {
+            fprintf(sal, "    // Ciclo %d: Latencia (NOP Bundle)\n", b);
+            fprintf(sal, "    %-26s | %-10s | %-22s | %-18s | %-16s ;\n",
+                    "nop", "nop", "nop", "nop", "nop");
+        } else {
+            fprintf(sal, "    %-26s | %-10s | %-22s | %-18s | %-16s ;\n",
+                    x->s[0] ? x->s[0] : "-", x->s[1] ? x->s[1] : "-",
+                    x->s[2] ? x->s[2] : "-", x->s[3] ? x->s[3] : "-",
+                    x->s[4] ? x->s[4] : "-");
+        }
     }
 }
 

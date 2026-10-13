@@ -3,13 +3,45 @@
  * Toma el Grafo de Dependencias Acíclico (DAG) de un bloque básico
  * construido a partir del código intermedio y empaqueta las instrucciones
  * TAC en bundles de 128 bits para el procesador CERBERO.
- * Implementa List Scheduling sobre el Grafo de Dependencias Acíclico (DAG).
+ * Implementa List Scheduling sobre el DAG, previniendo conflictos WCONF
+ * e inyectando latencia explícita mediante NOP Bundles.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include "scheduler.h"
 #include "tac.h"
+#include <string.h>
+
+// Funciones de detección
+
+// Verifica si una instrucción causa un conflicto de escritura (WCONF) en el bundle actual
+static bool has_wconf(TACInst* instr, Bundle* bundle) {
+    // Si la instrucción no tiene variable/registro de destino (ej. saltos, stores), no hay conflicto
+    if (instr->result == NULL) {
+        return false;
+    }
+
+    // Revisar los 5 slots del bundle actual buscando otra escritura al mismo destino
+    for (int i = 0; i < 5; i++) {
+        if (bundle->slots[i] != NULL && bundle->slots[i]->result != NULL) {
+            // Compara los nombres de los destinos usando strcmp
+            if (strcmp(bundle->slots[i]->result, instr->result) == 0) {
+                return true; // Conflicto detectado: doble escritura en el mismo bundle
+            }
+        }
+    }
+    return false;
+}
+
+// Verifica si un bundle está completamente vacío (NOP Bundle)
+static bool is_bundle_empty(Bundle* bundle) {
+    for (int i = 0; i < 5; i++) {
+        if (bundle->slots[i] != NULL) return false;
+    }
+    return true;
+}
 
 //Prototipos locales
 static Bundle* create_empty_bundle(int cycle);
@@ -48,31 +80,36 @@ BundleList* schedule_basic_block(DAG* dag) {
     // Bucle principal: avanza ciclo por ciclo hasta empaquetar todas las instrucciones
     while (nodes_scheduled < dag->node_count) {
         Bundle* bundle = create_empty_bundle(current_cycle);
-        bool bundle_used = false;
+        bool instruction_added_this_cycle = false;
 
         // Itera sobre todos los nodos buscando instrucciones listas (Ready List implícita)
         DAGNode* n = dag->head;
         while (n != NULL) {
-            // Condición para estar listo: no planificado, sin dependencias previas, 
-            // y con la latencia arquitectónica transcurrida. 
+            // Verifica dependencias resueltas y latencia de 3 ciclos cumplida
             if (!n->scheduled && n->in_degree == 0 && n->max_ready_cycle <= current_cycle) {
                 
-                // Intenta ubicar la instrucción en uno de los 5 slots libres del bundle actual
+                // Previene WCONF (Write Conflict)
+                if (has_wconf(n->instr, bundle)) {
+                    n = n->next;
+                    continue; // Pospone esta instrucción al siguiente ciclo/bundle
+                }
+
                 int slot = assign_to_slot(n->instr, bundle);
                 
                 if (slot != -1) {
                     bundle->slots[slot] = n->instr;
                     n->scheduled = true;
                     n->scheduled_cycle = current_cycle;
-                    bundle_used = true;
+                    instruction_added_this_cycle = true;
                     nodes_scheduled++;
 
-                    // Libera a los sucesores (Disminuir in_degree y actualizar latencias)
+                    // Actualiza dependientes y propaga la latencia de 3 ciclos
                     DAGEdge* edge = n->out_edges;
                     while (edge != NULL) {
                         edge->to->in_degree--;
                         
-                        // Calcula cuándo el sucesor podrá ejecutarse sin violar dependencias
+                        // La latencia requerida se definió en la construcción del DAG 
+                        // (ej. 3 para RAW de la ALU/LSU). Se establece el ciclo mínimo seguro.
                         int ready_time = current_cycle + edge->latency;
                         if (ready_time > edge->to->max_ready_cycle) {
                             edge->to->max_ready_cycle = ready_time;
@@ -84,17 +121,21 @@ BundleList* schedule_basic_block(DAG* dag) {
             n = n->next;
         }
 
-        // Si se asignó al menos una instrucción, agregamos el bundle a la lista 
-        if (bundle_used) {
-            if (list->head == NULL) list->head = bundle;
-            if (list->tail != NULL) list->tail->next = bundle;
+        // Emisión explícita de latencia (NOPs)
+        // Si no se pudo programar ninguna instrucción, pero aún faltan nodos por programar,
+        // significa que se esta esperando que se cumpla la latencia de 3 bundles de un productor.
+        // Se deben conservar este bundle vacío en la lista para que actúe como un NOP de hardware.
+        if (instruction_added_this_cycle || (!instruction_added_this_cycle && nodes_scheduled < dag->node_count)) {
+            if (!list->head) list->head = bundle;
+            if (list->tail) list->tail->next = bundle;
             list->tail = bundle;
             list->bundle_count++;
         } else {
+            // Solo libera el bundle si hemos terminado de programar todo
             free(bundle);
         }
         
-        current_cycle++; //Avanza el reloj
+        current_cycle++; // Avanza el reloj global
     }
 
     return list;
@@ -116,13 +157,13 @@ static int assign_to_slot(TACInst* instr, Bundle* bundle) {
     if (instr == NULL || instr->op == TAC_NOP) return -1;
 
     if (is_alu(instr)) {
-        if (bundle->slots[0] == NULL) return 0;      // S0: ALU-0 (Única que escribe banderas)
-        if (bundle->slots[1] == NULL) return 1;      // S1: ALU-1 
+        if (bundle->slots[0] == NULL) return 0;      // S0: ALU-0 (Única que escribe banderas))
+        if (bundle->slots[1] == NULL) return 1;      // S1: ALU-1  
         // La conversión a ShortALU (S3) si S0 y S1 están ocupados se implementará aquí
         return -1; 
     }
     else if (is_lsu(instr)) {
-        if (bundle->slots[2] == NULL) return 2;      // S2: LSU (Load/Store)
+        if (bundle->slots[2] == NULL) return 2;      // S2: LSU (Load/Store) 
         return -1;
     }
     else if (is_crp(instr)) {
@@ -133,8 +174,8 @@ static int assign_to_slot(TACInst* instr, Bundle* bundle) {
         if (bundle->slots[4] == NULL) return 4;      // S4: Branch Unit (Saltos/Retornos)
         return -1;
     }
-    
-    // Fallback por defecto a S0 para pseudo-instrucciones si forman parte del DAG
+ 
+   // Fallback por defecto a S0 para pseudo-instrucciones si forman parte del DAG    
     return (bundle->slots[0] == NULL) ? 0 : -1; 
 }
 
