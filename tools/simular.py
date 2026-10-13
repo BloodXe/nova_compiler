@@ -42,6 +42,12 @@ LATENCIA = 3
 PILA_TOPE = 0xFFFC
 PILA_PISO = 0xF000
 
+# Region segura de IMEM. La boveda solo mantiene AUTH encendido mientras el PC
+# esta adentro: un login fuera no abre sesion y no reporta falla, y salir de la
+# region cierra la sesion por hardware.
+SEC_BASE = 0x7000
+SEC_LIMIT = 0x7FFF
+
 M32 = 0xFFFFFFFF
 
 
@@ -158,6 +164,13 @@ def ensamblar(texto):
             seccion = "text"; continue
         if linea.startswith(".org"):
             org = int(linea.split()[1], 0)
+            # En .text el .org abre un hueco real: se rellena con bundles
+            # vacios para que el indice coincida con la direccion.
+            if seccion == "text":
+                while len(bundles) < org // 16:
+                    bundles.append(["-"] * 5)
+            continue
+        if linea in (".secure", ".endsecure"):
             continue
 
         if seccion == "data":
@@ -173,12 +186,10 @@ def ensamblar(texto):
                 mem[org:org + 4] = (v & M32).to_bytes(4, "little")
                 org += 4
                 continue
-            if linea.startswith(".ascii"):
-                s = linea[linea.index('"') + 1: linea.rindex('"')]
-                s = s.replace('\\"', '"').replace("\\\\", "\\")
-                b = s.encode("utf-8")
-                mem[org:org + len(b)] = b
-                org += len(b)
+            if linea.startswith(".byte"):
+                for v in linea.split(None, 1)[1].split(","):
+                    mem[org] = int(v.strip(), 0) & 0xFF
+                    org += 1
                 continue
             if linea.startswith(".align"):
                 a = int(linea.split()[1], 0)
@@ -265,6 +276,10 @@ def ejecutar(bundles, etiquetas, mem, traza=False, maxb=2000000):
         mq.bundle = n
         mq.aplicar_pendientes()
 
+        # Cierre automatico: la sesion solo sigue abierta dentro de la region.
+        if mq.auth and not (SEC_BASE <= pc * 16 <= SEC_LIMIT):
+            mq.auth = 0
+
         if traza:
             # Se muestran todos los slots ocupados, no solo la ALU y el BRU:
             # los accesos a memoria van en S2 y la cripto en S3, y son justo
@@ -312,9 +327,10 @@ def ejecutar(bundles, etiquetas, mem, traza=False, maxb=2000000):
                     v = int(arg, 0)
                 mq.escribir(parse_reg(partes[1]), v)
             elif m == "movh":
+                # Tipo U: rd <- {imm16, rd[15:0]} (alu.sv, movh_w)
                 rd = parse_reg(partes[1])
-                hi = int(partes[2].lstrip("#"), 0)
-                mq.escribir(rd, (mq.leer(rd) & 0x7FFFF) | (hi << 19))
+                hi = int(partes[2].lstrip("#"), 0) & 0xFFFF
+                mq.escribir(rd, (mq.leer(rd) & 0xFFFF) | (hi << 16))
             elif m == "cmp":
                 mq.poner_flags(mq.leer(parse_reg(partes[1])), mq.leer(parse_reg(partes[2])))
             elif m == "cmpi":
@@ -357,7 +373,8 @@ def ejecutar(bundles, etiquetas, mem, traza=False, maxb=2000000):
             elif m == "halt":
                 mq.halted = True
             elif m == "login":
-                mq.auth = 1 if mq.desafio == [0, 0, 0, 0] or True else 0
+                # Un login fuera de la region segura no abre sesion.
+                mq.auth = 1 if SEC_BASE <= pc * 16 <= SEC_LIMIT else 0
             elif m == "logout":
                 mq.auth = 0
                 mq.desafio = [0, 0, 0, 0]
@@ -365,12 +382,12 @@ def ejecutar(bundles, etiquetas, mem, traza=False, maxb=2000000):
                 w = int(partes[1].lstrip("#"), 0)
                 mq.desafio[w] = mq.leer(parse_reg(partes[2]))
             elif m == "ksetw":
-                kv = int(partes[1].lstrip("#"), 0)
+                kv = int(partes[1].lstrip("#kK"), 0)
                 w = int(partes[2].lstrip("#"), 0)
                 mq.vault[kv][w] = mq.leer(parse_reg(partes[3]))
             elif m in ("f4e", "f4d"):
                 # Ronda de Feistel4 de referencia: R' = L, L' = R xor F(L, k)
-                kv = int(partes[2].lstrip("#"), 0)
+                kv = int(partes[2].lstrip("#kK"), 0)
                 ronda = int(partes[3].lstrip("#"), 0)
                 L, R = mq.leer(0), mq.leer(1)
                 k = mq.vault[kv][ronda & 3]
@@ -453,6 +470,9 @@ def dec_alu(w):
     if tipo == 3:
         return "%s r%d, r%d, #%d" % (mn, rd, rs1, imm)
     if tipo == 4:
+        if mn == "movh":
+            # tipo U: el inmediato de 16 bits esta en [18:3]
+            return "movh r%d, #%d" % (rd, (w >> 3) & 0xFFFF)
         return "%s r%d, #%d" % (mn, rd, imm)
     return "%s r%d, #%d" % (mn, rs1, imm)
 
@@ -473,15 +493,16 @@ def dec_crp(w):
         return "nop"
     if op in (1, 2):
         par, kv, ronda = (w >> 10) & 7, (w >> 8) & 3, (w >> 6) & 3
-        return "%s p%d, #%d, #%d" % ("f4e" if op == 1 else "f4d", par, kv, ronda)
+        return "%s p%d, k%d, #%d" % ("f4e" if op == 1 else "f4d", par, kv, ronda)
     if op == 3:
-        return "ksetw #%d, #%d, r%d" % ((w >> 11) & 3, (w >> 9) & 3, (w >> 5) & 0xF)
+        return "ksetw k%d, #%d, r%d" % ((w >> 11) & 3, (w >> 9) & 3, (w >> 5) & 0xF)
     if op == 4:
-        return "authw #%d, r%d" % ((w >> 11) & 3, (w >> 5) & 0xF)
+        # widx va en [10:9]; [12:11] es reservado (ISA v1.1)
+        return "authw #%d, r%d" % ((w >> 9) & 3, (w >> 5) & 0xF)
     if op == 5:
         sub = (w >> 11) & 3
         if sub == 3:
-            return "kclr #%d" % ((w >> 9) & 3)
+            return "kclr k%d" % ((w >> 9) & 3)
         return ["login", "logout", "pwset"][sub]
     raise RuntimeError("opcode criptografico desconocido: %d" % op)
 

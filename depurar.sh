@@ -7,6 +7,7 @@
 #   sh depurar.sh fase2        # analisis sintactico
 #   sh depurar.sh fase3        # analisis semantico
 #   sh depurar.sh fase4        # codigo intermedio y ensamblador
+#   sh depurar.sh cerbero      # contraste con el ensamblador de CE4301
 #   sh depurar.sh cobertura    # tokens y codigos de error ejercitados
 #   sh depurar.sh memoria      # sanitizers y valgrind
 #   sh depurar.sh robustez     # el compilador no debe caerse con nada
@@ -723,8 +724,67 @@ d_opciones() {
 
 # ---------------------------------------------------------------- principal
 objetivo=${1:-todo}
+d_cerbero() {
+    titulo "Contraste con el ensamblador de CERBERO"
+    existe_novac
+
+    # El proyecto de CE4301 trae su propio ensamblador. Si esta a mano, es la
+    # verificacion mas fuerte que existe: dos implementaciones independientes
+    # de la codificacion del ISA tienen que producir los mismos 128 bits.
+    ASM=${CERBERO_ASM:-}
+    if [ -z "$ASM" ]; then
+        for c in ../cerbero/tools/cerbero_asm.py ../../cerbero/tools/cerbero_asm.py \
+                 ../cerbero/cerbero/tools/cerbero_asm.py; do
+            [ -f "$c" ] && ASM=$c && break
+        done
+    fi
+    if [ -z "$ASM" ] || [ ! -f "$ASM" ]; then
+        nota "no se encontro cerbero_asm.py; se omite"
+        nota "para correrlo: CERBERO_ASM=/ruta/a/cerbero_asm.py make depurar F=cerbero"
+        return
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        nota "python3 no esta disponible; se omite"; return
+    fi
+
+    ok "se encontro el ensamblador de CERBERO"
+    iguales=0; distintos=0; pendientes=0
+    for f in test/factorial.nv test/ejemplos/*.nv test/ejecucion/*.nv; do
+        [ -f "$f" ] || continue
+        n=$(basename "$f" .nv)
+        $NOVAC -s "$f" > "$TMP/c.s" 2>/dev/null || continue
+        if ! python3 "$ASM" "$TMP/c.s" -o "$TMP/c.hex" >"$TMP/c.err" 2>&1; then
+            case "$(cat "$TMP/c.err")" in
+                *'inmediato mal formado'*'$'*) pendientes=$((pendientes + 1)) ;;
+                *) falla "$n: cerbero_asm lo rechaza"
+                   head -2 "$TMP/c.err" | sed 's/^/        /'
+                   distintos=$((distintos + 1)) ;;
+            esac
+            continue
+        fi
+        $NOVAC "$f" -o "$TMP/c.bin" 2>/dev/null || continue
+        if python3 - "$TMP/c.bin" "$TMP/c.hex" <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read()
+u = lambda o: int.from_bytes(d[o:o+4], 'little')
+n = u(8)
+nova = [(u(48+b*16+12) << 96) | (u(48+b*16+8) << 64) |
+        (u(48+b*16+4) << 32) | u(48+b*16) for b in range(n)]
+suyo = [int(l.strip(), 16) for l in open(sys.argv[2]) if l.strip()]
+sys.exit(0 if nova == suyo else 1)
+PY
+        then iguales=$((iguales + 1))
+        else falla "$n: los bits de Nova no coinciden con los de cerbero_asm"
+             distintos=$((distintos + 1)); fi
+    done
+    [ "$distintos" -eq 0 ] && ok "los $iguales ejecutables coinciden bit a bit con cerbero_asm"
+    [ "$pendientes" -gt 0 ] && nota "$pendientes programas importan otro modulo: los resuelve el enlazador"
+    return 0
+}
+
 case "$objetivo" in
     build)     d_build ;;
+    cerbero)   d_cerbero ;;
     fase1)     d_fase1 ;;
     fase2)     d_fase2 ;;
     fase3)     d_fase3 ;;
@@ -735,10 +795,10 @@ case "$objetivo" in
     opciones)  d_opciones ;;
     todo)
         d_build; d_fase1; d_fase2; d_fase3; d_fase4
-        d_cobertura; d_opciones; d_robustez; d_memoria ;;
+        d_cobertura; d_opciones; d_robustez; d_memoria; d_cerbero ;;
     *)
         echo "objetivo desconocido: $objetivo"
-        echo "use: build fase1 fase2 fase3 fase4 cobertura memoria robustez opciones todo"
+        echo "use: build fase1 fase2 fase3 fase4 cerbero cobertura memoria robustez opciones todo"
         exit 2 ;;
 esac
 

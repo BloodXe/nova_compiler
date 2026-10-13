@@ -44,6 +44,15 @@
  * 0x3000         __out_n, cantidad de palabras escritas
  * 0x3004-0x3FFC  __out_buf, zona de salida que leen las herramientas de CE 4301
  */
+/*
+ * Region segura de IMEM. El controlador de boveda solo mantiene AUTH encendido
+ * mientras el PC esta dentro de [SEC_BASE, SEC_LIMIT], y un LOGIN fuera de ese
+ * rango no abre sesion y tampoco reporta falla: el programa cifraria con la
+ * llave equivocada. Por eso toda funcion que toque la boveda se emite aqui.
+ */
+#define SEC_BASE_BUNDLE  (0x7000 / 16)      /* 1792 */
+#define SEC_BUNDLES      (0x1000 / 16)      /* 256  */
+
 #define DIR_CADENAS   0x2000
 #define DIR_OUT_N     0x3000
 #define DIR_OUT_BUF   0x3004
@@ -128,6 +137,10 @@ static int n_temps = 0;
 
 static TACList *lista = NULL;
 
+/* Donde empieza el bloque seguro, o -1 si el programa no usa la boveda. */
+static int inicio_seguro = -1;
+
+
 /*
  * Relajacion de saltos.
  *
@@ -169,6 +182,21 @@ static void cache_limpiar(void) {
 /* Soporte de ejecucion que hay que emitir al final */
 static bool usa_div = false, usa_scribe_int = false;
 static bool usa_scribe_txt = false, usa_dic = false;
+
+/*
+ * Que rutinas del soporte hace falta emitir. Se decide recorriendo el TAC
+ * antes de emitir nada, porque el soporte va en el bloque no seguro y las
+ * funciones que lo necesitan pueden estar en el seguro, que se emite despues.
+ */
+static void medir_soporte(TACList *tac) {
+    for (TACInst *i = tac->head; i != NULL; i = i->next) {
+        if (i->op == TAC_DIV || i->op == TAC_MOD) usa_div = true;
+        if (i->op != TAC_CALL || i->arg1 == NULL) continue;
+        if (strcmp(i->arg1, "__scribe_int") == 0) usa_scribe_int = true;
+        else if (strcmp(i->arg1, "__scribe_txt") == 0) { usa_scribe_txt = true; usa_scribe_int = true; }
+        else if (strcmp(i->arg1, "__dic_fin") == 0)    { usa_dic = true; usa_scribe_int = true; }
+    }
+}
 
 /* --- Emision de bundles ------------------------------------------------ */
 
@@ -392,19 +420,38 @@ static void cargar_const(int rd, long v) {
         emitir(S_ALU0, t, rd, -1, -1);
         return;
     }
+    /*
+     * Constante de 32 bits en dos instrucciones. MOVH no es del tipo I: es del
+     * tipo U, reemplaza los 16 bits altos de rd y conserva los 16 bajos
+     * (alu.sv: movh_w = {imm16, op_a_i[15:0]}). Por eso el corte es 16 y 16,
+     * no 19 y 13, y por eso el orden obligatorio es MOVI y despues MOVH.
+     *
+     * La mitad baja va por MOVI, que extiende el signo de sus 19 bits; da lo
+     * mismo que extienda, porque MOVH sobrescribe justo esa parte despues.
+     */
     unsigned long u = (unsigned long)v & 0xFFFFFFFFUL;
-    long lo = (long)(u & 0x7FFFFUL);
-    long hi = (long)((u >> 19) & 0x1FFFUL);
+    long lo = (long)(u & 0xFFFFUL);
+    long hi = (long)((u >> 16) & 0xFFFFUL);
     snprintf(t, sizeof(t), "movi r%d, #%ld", rd, lo);
     emitir(S_ALU0, t, rd, -1, -1);
     snprintf(t, sizeof(t), "movh r%d, #%ld", rd, hi);
     emitir(S_ALU0, t, rd, rd, -1);
 }
 
+/*
+ * Direccion de un literal de cadena. Se resuelve aqui a su valor numerico, no
+ * se deja el nombre de la etiqueta: el ensamblador de CERBERO solo acepta
+ * numeros en los inmediatos, y las direcciones de la seccion de datos ya se
+ * conocen porque las asigno construir_datos().
+ */
 static void cargar_etiqueta(int rd, const char *etq) {
-    char t[80];
-    snprintf(t, sizeof(t), "movi r%d, #%s", rd, etq);
-    emitir(S_ALU0, t, rd, -1, -1);
+    int dir = buscar_etiqueta_dato(etq);
+    if (dir < 0) {
+        diag_error("E410", 0, 1, 1, "literal de cadena '%s' no ubicado", etq);
+        hubo_error = true;
+        dir = 0;
+    }
+    cargar_const(rd, dir);
 }
 
 static void lw(int rd, int rbase, int disp) {
@@ -626,7 +673,7 @@ static void emitir_inst(TACInst *i) {
             usa_div = true;
             cargar(R_ARG0, i->arg1);
             cargar(R_ARG0 + 1, i->arg2);
-            salto("jal.al __div32", -1);
+            salto("jal.al __nova_div32", -1);
             for (int r = 0; r < 16; r++) listo[r] = ciclo;
             guardar(i->op == TAC_DIV ? R_ARG0 : R_ARG0 + 1, i->result);
             break;
@@ -828,7 +875,7 @@ static void emitir_inst(TACInst *i) {
         case TAC_KSETW:
             guardia_boveda();
             cargar(RA, i->arg2);
-            snprintf(buf, sizeof(buf), "ksetw %ld, #%d, r%d", i->valor, i->aux, RA);
+            snprintf(buf, sizeof(buf), "ksetw k%ld, #%d, r%d", i->valor, i->aux, RA);
             emitir(S_CRP, buf, -1, RA, -1);
             break;
 
@@ -840,7 +887,7 @@ static void emitir_inst(TACInst *i) {
             cargar(RB, i->arg1);
             lw(0, RB, 0);
             lw(1, RB, 4);
-            snprintf(buf, sizeof(buf), "f4e p0, %ld, #%d", i->valor, i->aux);
+            snprintf(buf, sizeof(buf), "f4e p0, k%ld, #%d", i->valor, i->aux);
             emitir(S_CRP, buf, 0, 0, 1);
             listo[1] = listo[0];
             sw(0, RB, 0);
@@ -935,9 +982,20 @@ static void emitir_epilogo(void) {
 
 /* --- Soporte de ejecucion --------------------------------------------- */
 
+/*
+ * Division con signo de Nova.
+ *
+ * Se llama __nova_div32 y no __div32 a proposito: CERBERO entrega su propia
+ * __div32 en tools/programas/div32.s, y las dos rutinas tienen contratos
+ * distintos. La de ellos trabaja sin signo, destruye R1 a R5 y con divisor
+ * cero devuelve cociente en unos sin fallar. La de Nova trabaja con signo,
+ * porque 'integer' lo tiene, y termina con el codigo 136 si el divisor es
+ * cero, porque es lo que promete el lenguaje. Con nombres distintos las dos
+ * pueden convivir en el mismo programa enlazado.
+ */
 static void emitir_div32(void) {
-    nota("__div32(R6 = a, R7 = b) -> R6 = a/b, R7 = a%%b; CERBERO no tiene DIV");
-    registrar_etiqueta("__div32");
+    nota("__nova_div32(R6 = a, R7 = b) -> R6 = a/b, R7 = a%%b, con signo");
+    registrar_etiqueta("__nova_div32");
     ciclo = 0;
     for (int i = 0; i < 16; i++) listo[i] = 0;
     cache_limpiar();
@@ -1172,16 +1230,22 @@ static void imprimir_datos_texto(TACList *tac) {
     fprintf(sal, "    // 0x0000-0x1FFF variables globales (Nova no tiene globales mutables)\n");
     fprintf(sal, "    .org 0x%04X\n", DIR_CADENAS);
     fprintf(sal, "    // Literales de cadena: una palabra de longitud y luego los bytes.\n");
+    /*
+     * Los bytes salen uno por uno con .byte y el relleno con .space: son las
+     * directivas que tiene el ensamblador de CERBERO. No hay .ascii ni .align.
+     */
     for (TACCadena *c = tac->cadenas; c != NULL; c = c->next) {
+        size_t n = strlen(c->texto);
         fprintf(sal, "%s:\n", c->etiqueta);
-        fprintf(sal, "    .word %zu\n", strlen(c->texto));
-        fprintf(sal, "    .ascii \"");
-        for (const char *q = c->texto; *q; q++) {
-            if (*q == '"' || *q == '\\') fputc('\\', sal);
-            fputc(*q, sal);
+        fprintf(sal, "    .word %zu\n", n);
+        for (size_t k = 0; k < n; k++) {
+            if (k % 12 == 0) fprintf(sal, "%s    .byte ", k ? "\n" : "");
+            else             fprintf(sal, ", ");
+            fprintf(sal, "0x%02X", (unsigned char)c->texto[k]);
         }
-        fprintf(sal, "\"\n");
-        fprintf(sal, "    .align 4\n");
+        if (n) fprintf(sal, "\n");
+        size_t sobra = n % 4;
+        if (sobra) fprintf(sal, "    .space %zu   // alineacion a palabra\n", 4 - sobra);
     }
     fprintf(sal, "\n    .org 0x%04X\n", DIR_OUT_N);
     fprintf(sal, "__out_n:\n    .word 0\n");
@@ -1191,6 +1255,13 @@ static void imprimir_datos_texto(TACList *tac) {
 static void imprimir_codigo_texto(void) {
     int ie = 0, in = 0;
     for (int b = 0; b <= n_bundles; b++) {
+        /*
+         * El bloque seguro se marca con las directivas que el ensamblador de
+         * CERBERO verifica. El .org evita tener que escribir los bundles de
+         * relleno: la herramienta los completa sola.
+         */
+        if (inicio_seguro >= 0 && b == inicio_seguro)
+            fprintf(sal, "\n    .org 0x%04X\n    .secure\n", b * 16);
         /* Notas y etiquetas salen en el orden en que se registraron. */
         for (;;) {
             bool hay_n = (in < n_notas && notas[in].bundle == b);
@@ -1201,7 +1272,10 @@ static void imprimir_codigo_texto(void) {
             else
                 fprintf(sal, "%s:\n", etqs[ie++].nombre);
         }
-        if (b == n_bundles) break;
+        if (b == n_bundles) {
+            if (inicio_seguro >= 0) fprintf(sal, "    .endsecure\n");
+            break;
+        }
         const Bundle *x = &prog[b];
         fprintf(sal, "    %-26s | %-10s | %-22s | %-18s | %-16s ;\n",
                 x->s[0] ? x->s[0] : "-", x->s[1] ? x->s[1] : "-",
@@ -1271,6 +1345,24 @@ static void liberar_todo(void) {
     cap_sitios = n_sitios = 0;
 }
 
+/*
+ * Una funcion es "segura" si su cuerpo toca la boveda. El criterio es el
+ * cuerpo entero y no cada instruccion por separado porque salir de la region
+ * cierra la sesion por hardware: el camino que va del LOGIN a la ultima ronda
+ * tiene que quedar completo adentro.
+ */
+static bool funcion_usa_boveda(TACInst *i) {
+    for (TACInst *j = i->next; j != NULL && j->op != TAC_FUNC_END; j = j->next) {
+        switch (j->op) {
+            case TAC_AUTHW: case TAC_VAULT_LOGIN: case TAC_VAULT_LOGOUT:
+            case TAC_KSETW: case TAC_FEISTEL:
+                return true;
+            default: break;
+        }
+    }
+    return false;
+}
+
 /* Arma el programa en memoria una vez. No escribe nada. */
 static bool construir_una_vez(TACList *tac) {
     liberar_construccion();
@@ -1280,9 +1372,11 @@ static bool construir_una_vez(TACList *tac) {
     n_bundles = n_etqs = n_etqs_dato = n_notas = 0;
     orden_global = 0;
     n_sitios = 0;
+    inicio_seguro = -1;
     datos_largo = datos_init = 0;
 
     construir_datos(tac);
+    medir_soporte(tac);
 
     /* Un archivo sin principale es un modulo de biblioteca: no lleva codigo
      * de arranque, solo sus funciones para que el enlazador las use. */
@@ -1307,8 +1401,34 @@ static bool construir_una_vez(TACList *tac) {
         nota("Modulo de biblioteca: no tiene principale, no lleva arranque");
     }
 
+    /*
+     * Primero las funciones normales, despues el soporte, y al final las que
+     * tocan la boveda, alineadas al comienzo de la region segura.
+     */
+    bool hay_seguras = false;
+    for (TACInst *i = tac->head; i != NULL; i = i->next)
+        if (i->op == TAC_FUNC_BEGIN && funcion_usa_boveda(i)) hay_seguras = true;
+
+    for (int tanda = 0; tanda < 2; tanda++) {
+    if (tanda == 1) {
+        if (usa_div) emitir_div32();
+        if (usa_scribe_int) emitir_scribe_int();
+        if (usa_scribe_txt) emitir_scribe_txt();
+        if (usa_dic) emitir_dic_fin();
+        if (!hay_seguras) break;
+        if (n_bundles > SEC_BASE_BUNDLE) {
+            diag_error("E410", 0, 1, 1,
+                       "el codigo no criptografico ocupa %d bundles y la region "
+                       "segura empieza en el %d", n_bundles, SEC_BASE_BUNDLE);
+            hubo_error = true;
+        }
+        while (n_bundles < SEC_BASE_BUNDLE) vacio();
+        inicio_seguro = n_bundles;
+        nota("Region segura: de 0x7000 a 0x7FFF. La boveda solo autentica aqui.");
+    }
     for (TACInst *i = tac->head; i != NULL; i = i->next) {
         if (i->op != TAC_FUNC_BEGIN) continue;
+        if (funcion_usa_boveda(i) != (tanda == 1)) continue;
 
         func = i->result;
         f_es_principale = (strcmp(func, "principale") == 0);
@@ -1326,11 +1446,7 @@ static bool construir_una_vez(TACList *tac) {
         for (TACInst *j = i->next; j != NULL && j->op != TAC_FUNC_END; j = j->next)
             emitir_inst(j);
     }
-
-    if (usa_div) emitir_div32();
-    if (usa_scribe_int) emitir_scribe_int();
-    if (usa_scribe_txt) emitir_scribe_txt();
-    if (usa_dic) emitir_dic_fin();
+    }
 
     return !hubo_error;
 }
@@ -1358,6 +1474,33 @@ static int marcar_desbordados(void) {
     return nuevos;
 }
 
+/*
+ * Una vez que la relajacion convergio, las posiciones son definitivas, asi que
+ * '#&etiqueta' se puede sustituir por la direccion en bytes. Hace falta porque
+ * el ensamblador de CERBERO solo acepta numeros en los inmediatos. Lo que no
+ * se puede resolver es un simbolo de otro modulo: eso lo deja el enlazador, y
+ * quien lo encuentre reporta E401.
+ */
+static void resolver_direcciones(void) {
+    for (int b = 0; b < n_bundles; b++) {
+        for (int k = 0; k < 5; k++) {
+            char *t = prog[b].s[k];
+            if (t == NULL) continue;
+            char *amp = strchr(t, '&');
+            if (amp == NULL) continue;
+            int destino = buscar_etiqueta(amp + 1);
+            if (destino < 0) continue;      /* externo: lo resuelve el enlazador */
+            char nuevo[96];
+            size_t pre = (size_t)(amp - t);
+            if (pre >= sizeof(nuevo)) continue;
+            memcpy(nuevo, t, pre);
+            snprintf(nuevo + pre, sizeof(nuevo) - pre, "%d", destino * 16);
+            free(prog[b].s[k]);
+            prog[b].s[k] = dup_o_nulo(nuevo);
+        }
+    }
+}
+
 /* Arma el programa y relaja los saltos que no alcanzan, hasta que converja. */
 static bool construir_programa(TACList *tac) {
     if (sitio_largo != NULL) memset(sitio_largo, 0, (size_t)cap_sitios);
@@ -1368,6 +1511,17 @@ static bool construir_programa(TACList *tac) {
         if (marcar_desbordados() == 0) break;
         ok = construir_una_vez(tac);
     }
+    resolver_direcciones();
+
+    /* El aviso va aqui y no en cada pasada: la relajacion construye varias
+     * veces y si no se repetiria una vez por pasada. */
+    if (inicio_seguro >= 0 && n_bundles - inicio_seguro > SEC_BUNDLES) {
+        diag_advertencia("W008", 0, 1, 1,
+                         "el codigo que usa la boveda ocupa %d bundles y la region "
+                         "segura tiene %d: parte quedaria afuera y la sesion se cerraria",
+                         n_bundles - inicio_seguro, SEC_BUNDLES);
+    }
+
     return ok;
 }
 
@@ -1437,7 +1591,7 @@ static const OpALU tabla_alu[] = {
     {"mov",  0x0C, 1}, {"not",  0x0D, 1}, {"cmp",  0x0E, 2}, {"test", 0x0F, 2},
     {"neg",  0x10, 1}, {"addi", 0x11, 3}, {"subi", 0x12, 3}, {"andi", 0x14, 3},
     {"ori",  0x15, 3}, {"xori", 0x16, 3}, {"slli", 0x17, 3}, {"srli", 0x18, 3},
-    {"srai", 0x19, 3}, {"roli", 0x1A, 3}, {"movi", 0x1C, 4}, {"movh", 0x1D, 4},
+    {"srai", 0x19, 3}, {"roli", 0x1A, 3}, {"movi", 0x1C, 4}, {"movh", 0x1D, 6},
     {"cmpi", 0x1E, 5}, {"testi",0x1F, 5},
     {NULL, 0, 0}
 };
@@ -1492,6 +1646,21 @@ static int reg_num(const char *t, bool *ok) {
 }
 
 /* Un inmediato: numero, o etiqueta de dato que se resuelve a su direccion. */
+/*
+ * Ranura de la boveda, escrita k0..k3. El ensamblador de CERBERO exige esta
+ * forma y rechaza un numero suelto, porque el campo kv es de dos bits y las
+ * ranuras son exactamente cuatro.
+ */
+static int llave_num(const char *t, bool *ok) {
+    *ok = false;
+    if (t[0] != 'k' && t[0] != 'K') return 0;
+    char *fin = NULL;
+    long v = strtol(t + 1, &fin, 10);
+    if (fin == NULL || *fin != '\0' || v < 0 || v > 3) return 0;
+    *ok = true;
+    return (int)v;
+}
+
 static long inmediato(const char *t, bool *ok) {
     *ok = true;
     const char *p = (t[0] == '#') ? t + 1 : t;
@@ -1556,18 +1725,26 @@ static uint32_t cod_alu(const char *texto) {
             w |= (uint32_t)rd << 23 | (uint32_t)a << 19 | ((uint32_t)v & 0x7FFFF);
             return w;
         }
-        case 4: {   /* rd, #imm : solo movi y movh */
+        case 4: {   /* rd, #imm : movi, tipo I con inmediato de 19 bits */
+            int rd = reg_num(p[1], &ok1);
+            long v = inmediato(p[2], &ok2);
+            if (!(ok1 && ok2)) { err_cod(texto, "se esperaba rd, #inmediato"); return 0; }
+            if (v < IMM19_MIN || v > IMM19_MAX) { err_cod(texto, "el inmediato no cabe en 19 bits"); return 0; }
+            w |= (uint32_t)rd << 23 | ((uint32_t)v & 0x7FFFF);
+            return w;
+        }
+        case 6: {   /* rd, #imm : movh, tipo U con inmediato de 16 bits */
             int rd = reg_num(p[1], &ok1);
             long v = inmediato(p[2], &ok2);
             if (!(ok1 && ok2)) { err_cod(texto, "se esperaba rd, #inmediato"); return 0; }
             /*
-             * movi y movh existen para armar patrones de 32 bits entre los
-             * dos, asi que su inmediato se acepta como los 19 bits completos
-             * sin signo, no solo como entero con signo. Los demas inmediatos
-             * si son con signo porque se suman o se comparan.
+             * Tipo U: el inmediato de 16 bits ocupa [18:3], y los campos rs1
+             * [22:19] y cond [2:0] son reservados y van en cero. Se acepta
+             * tanto la forma con signo como la forma sin signo, porque lo que
+             * se escribe es un patron de bits.
              */
-            if (v < IMM19_MIN || v > 0x7FFFF) { err_cod(texto, "el inmediato no cabe en 19 bits"); return 0; }
-            w |= (uint32_t)rd << 23 | ((uint32_t)v & 0x7FFFF);
+            if (v < -32768 || v > 65535) { err_cod(texto, "el inmediato de movh no cabe en 16 bits"); return 0; }
+            w |= (uint32_t)rd << 23 | (((uint32_t)v & 0xFFFF) << 3);
             return w;
         }
         case 5: {   /* rs1, #imm */
@@ -1637,11 +1814,12 @@ static uint16_t cod_crp(const char *texto) {
         if (p[1][0] != 'p' && p[1][0] != 'P') { err_cod(texto, "se esperaba un par P0-P7"); return 0; }
         long par = strtol(p[1] + 1, NULL, 10);
         bool ok1 = false, ok2 = false;
-        long kv = inmediato(p[2], &ok1);
+        long kv = llave_num(p[2], &ok1);
         long ronda = inmediato(p[3], &ok2);
-        if (!(ok1 && ok2)) { err_cod(texto, "kv y ronda deben ser constantes"); return 0; }
-        if (par < 0 || par > 7 || kv < 0 || kv > 3 || ronda < 0 || ronda > 3) {
-            err_cod(texto, "par 0-7, kv 0-3 y ronda 0-3");
+        if (!ok1) { err_cod(texto, "se esperaba una llave k0..k3"); return 0; }
+        if (!ok2) { err_cod(texto, "la ronda debe ser constante"); return 0; }
+        if (par < 0 || par > 7 || ronda < 0 || ronda > 3) {
+            err_cod(texto, "par 0-7 y ronda 0-3");
             return 0;
         }
         return (uint16_t)(op << 13 | (unsigned)par << 10 |
@@ -1649,27 +1827,33 @@ static uint16_t cod_crp(const char *texto) {
     }
 
     if (strcmp(p[0], "ksetw") == 0) {
-        /* ksetw kv, #widx, rs : kv en [12:11], widx en [10:9], rs en [8:5] */
-        if (n < 4) { err_cod(texto, "se esperaba kv, #widx, rs"); return 0; }
+        /* ksetw kN, #widx, rs : kv en [12:11], widx en [10:9], rs en [8:5] */
+        if (n < 4) { err_cod(texto, "se esperaba kN, #widx, rs"); return 0; }
         bool ok1 = false, ok2 = false, ok3 = false;
-        long kv = inmediato(p[1], &ok1);
+        long kv = llave_num(p[1], &ok1);
         long widx = inmediato(p[2], &ok2);
         int rs = reg_num(p[3], &ok3);
-        if (!(ok1 && ok2 && ok3)) { err_cod(texto, "operandos de ksetw"); return 0; }
-        if (kv < 0 || kv > 3 || widx < 0 || widx > 3) { err_cod(texto, "kv y widx van de 0 a 3"); return 0; }
+        if (!ok1) { err_cod(texto, "se esperaba una llave k0..k3"); return 0; }
+        if (!(ok2 && ok3)) { err_cod(texto, "operandos de ksetw"); return 0; }
+        if (widx < 0 || widx > 3) { err_cod(texto, "widx va de 0 a 3"); return 0; }
         return (uint16_t)(3u << 13 | (unsigned)kv << 11 |
                           (unsigned)widx << 9 | (unsigned)rs << 5);
     }
 
     if (strcmp(p[0], "authw") == 0) {
-        /* authw #widx, rs : widx en [12:11], rs en [8:5] */
+        /*
+         * authw #widx, rs : widx en [10:9], rs en [8:5].
+         *
+         * El campo [12:11] es reservado y tiene que ir en cero: el ISA lo fijo
+         * asi en la v1.1 y key_vault.sv levanta ILLOP si no lo esta.
+         */
         if (n < 3) { err_cod(texto, "se esperaba #widx, rs"); return 0; }
         bool ok1 = false, ok2 = false;
         long widx = inmediato(p[1], &ok1);
         int rs = reg_num(p[2], &ok2);
         if (!(ok1 && ok2)) { err_cod(texto, "operandos de authw"); return 0; }
         if (widx < 0 || widx > 3) { err_cod(texto, "widx va de 0 a 3"); return 0; }
-        return (uint16_t)(4u << 13 | (unsigned)widx << 11 | (unsigned)rs << 5);
+        return (uint16_t)(4u << 13 | (unsigned)widx << 9 | (unsigned)rs << 5);
     }
 
     /* VCTL: subfn en [12:11], kv en [10:9] cuando aplica. */
@@ -1678,8 +1862,8 @@ static uint16_t cod_crp(const char *texto) {
     if (strcmp(p[0], "pwset") == 0)  return (uint16_t)(5u << 13 | 2u << 11);
     if (strcmp(p[0], "kclr") == 0) {
         bool ok1 = false;
-        long kv = (n >= 2) ? inmediato(p[1], &ok1) : 0;
-        if (!ok1 || kv < 0 || kv > 3) { err_cod(texto, "kclr necesita kv de 0 a 3"); return 0; }
+        long kv = (n >= 2) ? llave_num(p[1], &ok1) : 0;
+        if (!ok1) { err_cod(texto, "kclr necesita una llave k0..k3"); return 0; }
         return (uint16_t)(5u << 13 | 3u << 11 | (unsigned)kv << 9);
     }
 

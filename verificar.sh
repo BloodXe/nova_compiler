@@ -1,8 +1,13 @@
 #!/bin/sh
-# verificar.sh -- prueba exhaustiva del compilador Nova, fase 4.
+# verificar.sh -- prueba exhaustiva del compilador Nova, fases 1 a 4.
 #
 #   sh verificar.sh            # todo
 #   sh verificar.sh 5          # solo el bloque 5
+#
+# Los bloques 12 a 14 contrastan contra el proyecto de CE4301. Si el
+# ensamblador de ellos no esta en una ruta vecina, se le pasa asi:
+#
+#   CERBERO_ASM=/ruta/a/cerbero/tools/cerbero_asm.py sh verificar.sh
 #
 # Imprime un informe compacto y determinista: la misma version del proyecto
 # tiene que dar exactamente la misma salida en cualquier maquina. Si algo no
@@ -42,7 +47,7 @@ fi
 
 # --------------------------------------------------------------------------
 if bloque 3 "Cada objetivo de depuracion por separado"; then
-    for f in build fase1 fase2 fase3 fase4 cobertura opciones robustez memoria; do
+    for f in build fase1 fase2 fase3 fase4 cerbero cobertura opciones robustez memoria; do
         r=$(make depurar F=$f 2>&1)
         printf '%-10s %2d ok, %d fallas\n' "$f" \
             "$(echo "$r" | grep -c '^  ok')" "$(echo "$r" | grep -c '^  FALLA')"
@@ -199,6 +204,167 @@ if bloque 11 "Memoria: sanitizers y valgrind"; then
     else
         echo "valgrind no esta instalado; lo cubre 'make depurar F=memoria'"
     fi
+fi
+
+
+# --------------------------------------------------------------------------
+# Localiza el ensamblador de CERBERO para los bloques 12 a 14.
+ASM=${CERBERO_ASM:-}
+if [ -z "$ASM" ]; then
+    for c in ../cerbero/tools/cerbero_asm.py ../../cerbero/tools/cerbero_asm.py \
+             ../cerbero/cerbero/tools/cerbero_asm.py \
+             ../../cerbero/cerbero/tools/cerbero_asm.py; do
+        [ -f "$c" ] && ASM=$c && break
+    done
+fi
+
+# --------------------------------------------------------------------------
+if bloque 12 "Contraste con el ensamblador de CERBERO"; then
+    if [ -z "$ASM" ] || [ ! -f "$ASM" ]; then
+        echo "no se encontro cerbero_asm.py"
+        echo "pase la ruta asi:  CERBERO_ASM=/ruta/a/cerbero_asm.py sh verificar.sh"
+    else
+        echo "usando $ASM"
+        echo
+        ig=0; di=0; pe=0
+        for f in test/factorial.nv test/ejemplos/*.nv test/ejecucion/*.nv; do
+            [ -f "$f" ] || continue
+            n=$(basename "$f" .nv)
+            $NOVAC -s "$f" > "$T/c.s" 2>/dev/null || continue
+            if ! python3 "$ASM" "$T/c.s" -o "$T/c.hex" > "$T/c.err" 2>&1; then
+                case "$(cat "$T/c.err")" in
+                    *'inmediato mal formado'*'$'*)
+                        printf '%-18s espera al enlazador (importa otro modulo)\n' "$n"
+                        pe=$((pe + 1)) ;;
+                    *)  printf '%-18s RECHAZADO: %s\n' "$n" \
+                            "$(head -1 "$T/c.err" | cut -c1-80)"
+                        di=$((di + 1)) ;;
+                esac
+                continue
+            fi
+            $NOVAC "$f" -o "$T/c.bin" 2>/dev/null || continue
+            if python3 - "$T/c.bin" "$T/c.hex" <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read()
+u = lambda o: int.from_bytes(d[o:o+4], 'little')
+n = u(8)
+nova = [(u(48+b*16+12) << 96) | (u(48+b*16+8) << 64) |
+        (u(48+b*16+4) << 32) | u(48+b*16) for b in range(n)]
+suyo = [int(l.strip(), 16) for l in open(sys.argv[2]) if l.strip()]
+sys.exit(0 if nova == suyo else 1)
+PY
+            then printf '%-18s IDENTICO bit a bit   %5s bundles\n' "$n" \
+                     "$(grep -c . "$T/c.hex")"; ig=$((ig + 1))
+            else printf '%-18s LOS BITS NO COINCIDEN\n' "$n"; di=$((di + 1)); fi
+        done
+        echo
+        echo "identicos: $ig, distintos: $di, pendientes de enlazar: $pe"
+    fi
+fi
+
+# --------------------------------------------------------------------------
+if bloque 13 "Las correcciones de alineacion, una por una"; then
+    v() { printf '  %-46s %s\n' "$1" "$2"; }
+
+    # 1. MOVH es tipo U: 16 bits altos, inmediato en [18:3]
+    $NOVAC -s test/ejemplos/bits_y_hex.nv > "$T/h.s" 2>/dev/null
+    lo=$(grep -c 'movi r10, #48879' "$T/h.s")
+    hi=$(grep -c 'movh r10, #57005' "$T/h.s")
+    [ "$lo" -ge 1 ] && [ "$hi" -ge 1 ] \
+        && v "1. 0xDEADBEEF se parte en 16 y 16" "movi #48879 + movh #57005" \
+        || v "1. 0xDEADBEEF se parte en 16 y 16" "NO"
+
+    # 2. AUTHW lleva widx en [10:9]
+    cat > "$T/a.s" <<'EOF'
+.text
+    .org 0x0000
+i:
+    - | - | - | authw #3, r4 | - ;
+    - | - | - | - | halt ;
+    - | - | - | - | - ;
+EOF
+    if [ -n "$ASM" ] && [ -f "$ASM" ]; then
+        python3 "$ASM" "$T/a.s" -o "$T/a.hex" >/dev/null 2>&1
+        s3=$(python3 -c "print('0x%04X' % ((int(open('$T/a.hex').readline().strip(),16)>>16)&0xFFFF))")
+        [ "$s3" = "0x8680" ] && v "2. authw #3, r4" "$s3, igual que cerbero_asm" \
+                             || v "2. authw #3, r4" "$s3, se esperaba 0x8680"
+    else
+        v "2. authw #3, r4" "hace falta cerbero_asm"
+    fi
+
+    # 3. La boveda vive en la region segura
+    $NOVAC -s test/advertencias/W008_region_segura_llena.nv > "$T/s.s" 2>/dev/null
+    grep -q '\.org 0x7000' "$T/s.s" && grep -q '\.secure' "$T/s.s" \
+        && v "3. el bloque de boveda se ancla en 0x7000" "con .secure y .endsecure" \
+        || v "3. el bloque de boveda se ancla en 0x7000" "NO"
+    if $NOVAC test/advertencias/W008_region_segura_llena.nv -o "$T/s.bin" 2>&1 \
+         | grep -q 'advertencia\[W008\]'
+    then v "4. W008 avisa si el bloque seguro no cabe" "si"
+    else v "4. W008 avisa si el bloque seguro no cabe" "NO"; fi
+
+    # 5. movi con signo
+    grep -q 'movi r10, #376559' "$T/h.s" \
+        && v "5. el inmediato de movi va con signo" "NO: sigue sin signo" \
+        || v "5. el inmediato de movi va con signo" "si"
+
+    # 6. sintaxis de la boveda y .byte
+    grep -q 'ksetw k0,' "$T/s.s" && grep -q 'f4e p0, k0,' "$T/s.s" \
+        && v "6. la ranura se escribe k0..k3" "ksetw k0 y f4e p0, k0" \
+        || v "6. la ranura se escribe k0..k3" "NO"
+    $NOVAC -s test/ejemplos/saludo.nv > "$T/t.s" 2>/dev/null
+    grep -q '\.byte' "$T/t.s" && ! grep -q '\.ascii\|\.align' "$T/t.s" \
+        && v "7. las cadenas salen con .byte" "sin .ascii ni .align" \
+        || v "7. las cadenas salen con .byte" "NO"
+    grep -q '#__str0\|#&' "$T/t.s" \
+        && v "8. no quedan etiquetas como inmediato" "NO: aun hay" \
+        || v "8. no quedan etiquetas como inmediato" "resueltas a numero"
+
+    # 9. la division renombrada
+    $NOVAC -s test/ejecucion/div_cero.nv > "$T/d.s" 2>/dev/null
+    grep -q '__nova_div32' "$T/d.s" && ! grep -q 'jal.al __div32' "$T/d.s" \
+        && v "9. la division se llama __nova_div32" "sin chocar con la de CERBERO" \
+        || v "9. la division se llama __nova_div32" "NO"
+fi
+
+# --------------------------------------------------------------------------
+if bloque 14 "Las reglas temporales del ISA"; then
+    python3 - <<'PY'
+import glob, subprocess, os, re
+S = ('br.', 'jal.', 'jr.', 'jalr.', 'halt')
+ds = sin = r15 = 0
+peor = 99
+arch = ['test/factorial.nv'] + sorted(glob.glob('test/ejemplos/*.nv'))      + sorted(glob.glob('test/ejecucion/*.nv'))
+n = 0
+for f in arch:
+    if subprocess.run(['./novac', '-s', f, '-o', '/tmp/_v.s'],
+                      capture_output=True).returncode:
+        continue
+    n += 1
+    bl = [[c.strip() for c in l.strip()[:-1].split('|')] for l in open('/tmp/_v.s')
+          if l.strip().endswith(';') and not l.strip().startswith('//')]
+    s4 = [b[4] for b in bl]
+    for i, a in enumerate(s4):
+        if any(a.startswith(p) for p in S):
+            if i + 1 >= len(s4):
+                sin += 1
+            elif any(s4[i+1].startswith(p) for p in S):
+                ds += 1
+    ult = None
+    for i, b in enumerate(bl):
+        if b[4].startswith('jal'):
+            ult = i
+        for sl in b:
+            if re.search('(^|[ ,(])r15([ ,)]|$)', sl) and not sl.startswith('jal') and ult is not None:
+                peor = min(peor, i - ult)
+                if i - ult < 3:
+                    r15 += 1
+os.path.exists('/tmp/_v.s') and os.remove('/tmp/_v.s')
+print("  %d programas revisados" % n)
+print("  saltos dentro de un delay slot (v1.2 lo prohibe):      %d" % ds)
+print("  saltos sin su delay slot, halt incluido (v1.2):        %d" % sin)
+print("  lecturas de r15 antes de 3 bundles del jal:            %d" % r15)
+print("  separacion minima medida entre un jal y leer r15:      %d bundles" % peor)
+PY
 fi
 
 printf '\n========== fin ==========\n'
