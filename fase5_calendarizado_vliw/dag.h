@@ -22,6 +22,11 @@ typedef struct DAGNode {
     DAGEdge* out_edges;   // Aristas salientes (instrucciones que dependen de este nodo)
     int in_degree;        // Grado de entrada (cantidad de dependencias pendientes)
     struct DAGNode* next; // Lista enlazada de todos los nodos en el bloque
+
+    // --- NUEVOS CAMPOS PARA EL SCHEDULER ---
+    bool scheduled;         // true si ya fue empaquetada
+    int scheduled_cycle;    // Ciclo en el que se asignó
+    int max_ready_cycle;    // Ciclo mínimo en el que puede ejecutarse respetando latencias
 } DAGNode;
 
 // Estructura contenedora del grafo para el bloque básico
