@@ -71,6 +71,7 @@ typedef enum {
     TAC_VAULT_LOGOUT,
     TAC_KSETW,      /* ksetw ranura arg1, palabra aux, valor arg2 */
     TAC_FEISTEL,    /* feistel sobre arg1 con la ranura arg2 y la ronda aux */
+    TAC_FEISTEL_DECRYPT, /* feistel inverso sobre arg1 */
 
     TAC_HALT
 } TACOp;

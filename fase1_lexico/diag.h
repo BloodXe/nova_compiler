@@ -3,6 +3,8 @@
 
 /* Helpers para reportar errores de manera uniforme en todas las fases. */
 void diag_iniciar(const char *archivo);
+/* Cambia el archivo asociado a los diagnosticos sin reiniciar sus contadores. */
+void diag_archivo(const char *archivo);
 
 /* Maximo de errores antes de abortar (--max-errors). Por omision 25. */
 void diag_max_errores(int n);

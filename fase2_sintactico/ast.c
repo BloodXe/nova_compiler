@@ -170,7 +170,7 @@ static void imprimir_rec(FILE *out, Nodo *n, int nivel) {
         if (n->tipo_resuelto != NULL) {
             fprintf(out, "  [tipo: %s]", n->tipo_resuelto);
         }
-        fprintf(out, "  (linea %d)\n", n->linea);
+        fprintf(out, "  (linea %d, columna %d)\n", n->linea, n->columna);
         imprimir_rec(out, n->hijo, nivel + 1);
     }
 }

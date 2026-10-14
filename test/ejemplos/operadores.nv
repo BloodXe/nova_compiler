@@ -35,6 +35,6 @@ functio principale() -> integer {
     scribe(reduce(v, 3));
     scribe(mascara);
     scribe(negativo);
-    scribe(mat.suma(1, 2));
+    scribe(mat.limitar(4, 0, 3));
     redde 0;
 }

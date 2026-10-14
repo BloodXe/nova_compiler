@@ -489,9 +489,9 @@ static char *generar_intrinseca(Nodo *e, TACList *l, const char *nombre) {
         return NULL;
     }
 
-    if (strcmp(nombre, "feistel") == 0) {
-        /* feistel(bloque, ranura, ronda): una ronda sobre el par (L,R). La
-         * ranura y la ronda son campos inmediatos del opcode F4E. */
+    if (strcmp(nombre, "feistel") == 0 || strcmp(nombre, "desfeistel") == 0) {
+        /* Una ronda sobre el par (L,R); la ronda se codifica directamente
+         * como inmediato en F4E o F4D. */
         long ranura = 0, ronda = 0;
         if (!valor_constante(a2, &ranura) || !valor_constante(a3, &ronda)) {
             diag_error("E319", e->linea, e->columna, 1,
@@ -506,7 +506,9 @@ static char *generar_intrinseca(Nodo *e, TACList *l, const char *nombre) {
         } else {
             bloque = generar_expr(a1, l);
         }
-        TACInst *i = tac_append(l, TAC_FEISTEL, NULL, bloque, NULL);
+        TACOp op = strcmp(nombre, "feistel") == 0
+            ? TAC_FEISTEL : TAC_FEISTEL_DECRYPT;
+        TACInst *i = tac_append(l, op, NULL, bloque, NULL);
         i->valor = ranura;
         i->aux = (int)ronda;
         i->linea = e->linea;
@@ -524,7 +526,8 @@ static char *generar_llamada(Nodo *e, TACList *l) {
     if (e->modulo == NULL &&
         (strcmp(nombre, "longitudo") == 0 || strcmp(nombre, "ingredere") == 0 ||
          strcmp(nombre, "exi") == 0 || strcmp(nombre, "custodi") == 0 ||
-         strcmp(nombre, "feistel") == 0)) {
+         strcmp(nombre, "feistel") == 0 ||
+         strcmp(nombre, "desfeistel") == 0)) {
         return generar_intrinseca(e, l, nombre);
     }
 
@@ -565,12 +568,8 @@ static char *generar_llamada(Nodo *e, TACList *l) {
     if (e->modulo != NULL) snprintf(destino, sizeof(destino), "%s$%s", e->modulo, nombre);
     else snprintf(destino, sizeof(destino), "%s", nombre);
 
-    /*
-     * El tipo de retorno de una llamada calificada lo resuelve el enlazador
-     * (familia E4xx), asi que aqui no se conoce: se reserva siempre un
-     * temporal para el resultado. Si la llamada se usa como sentencia, el
-     * temporal queda sin leer y no cuesta nada.
-     */
+    /* El temporal de retorno se reserva para llamadas con valor; la fase
+     * semantica ya verifico la firma tras integrar los modulos. */
     /*
      * @cauda: una llamada recursiva en posicion de cola no apila un marco
      * nuevo. Los argumentos ya quedaron en los registros y en el area de
@@ -1033,6 +1032,8 @@ void tac_print(FILE *out, TACList *list) {
                 fprintf(out, "    vault.store #%ld, #%d, %s\n", i->valor, i->aux, i->arg2); break;
             case TAC_FEISTEL:
                 fprintf(out, "    feistel %s, #%ld, #%d\n", i->arg1, i->valor, i->aux); break;
+            case TAC_FEISTEL_DECRYPT:
+                fprintf(out, "    desfeistel %s, #%ld, #%d\n", i->arg1, i->valor, i->aux); break;
             case TAC_HALT:
                 fprintf(out, "    halt\n"); break;
             default:

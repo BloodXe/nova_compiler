@@ -1,5 +1,5 @@
 #!/bin/sh
-# Suite de pruebas de las fases 1 a 4.
+# Suite funcional del compilador: analisis, diagnosticos y generacion.
 #   Uso: sh test/run_tests.sh [./novac]
 #
 # 1. Todo test/*.nv y test/ejemplos/*.nv debe analizarse sin errores (rc 0) y
@@ -32,9 +32,7 @@ bad() { FAIL=$((FAIL + 1)); echo "FALLO: $1"; [ -n "$2" ] && echo "$2" | head -8
 # 1. archivos validos --------------------------------------------------------
 for f in "$DIR"/*.nv "$DIR"/ejemplos/*.nv "$DIR"/ejecucion/*.nv; do
     [ -f "$f" ] || continue
-    # Analisis y codigo intermedio. No se pide el ejecutable aqui: los
-    # modulos de biblioteca y los que importan otro modulo no pueden
-    # producirlo todavia, y eso se verifica aparte.
+    # Analisis y codigo intermedio.
     out=$("$NOVAC" --ir "$f" 2>&1); rc=$?
     if [ $rc -eq 0 ]; then ok; else bad "$f deberia analizarse sin errores (rc=$rc)" "$out"; fi
     out=$("$NOVAC" --tokens "$f" 2>&1); rc=$?
@@ -52,12 +50,9 @@ for f in "$DIR"/*.nv "$DIR"/ejemplos/*.nv "$DIR"/ejecucion/*.nv; do
         *) bad "$f --sym no imprimio la tabla de simbolos completa" "$out" ;;
     esac
 
-    # El ejecutable binario: se exige a los programas completos, o sea los
-    # que tienen principale y no importan otro modulo. A los demas se les
-    # exige lo contrario, que digan que falta enlazar.
+    # Todo programa principal, incluso con imports resolubles, produce binario.
     completo=1
     grep -q 'functio  *principale' "$f" || completo=0
-    grep -q '^ *importa' "$f" && completo=0
     out=$("$NOVAC" "$f" -o "$TMPEXE" 2>&1); rc=$?
     if [ "$completo" -eq 1 ]; then
         if [ $rc -eq 0 ] && [ -s "$TMPEXE" ]; then ok
@@ -131,6 +126,17 @@ if [ $rc -eq 3 ]; then ok; else bad "archivo inexistente deberia dar rc=3 (rc=$r
 "$NOVAC" >/dev/null 2>&1; rc=$?
 if [ $rc -eq 2 ]; then ok; else bad "sin argumentos deberia dar rc=2 (rc=$rc)"; fi
 
+# Objetos de fuente empaquetada: el enlazador vuelve a analizarlos y resuelve
+# las referencias de modulo en el ejecutable final.
+obj="$TMP/doble.nvo"
+out=$("$NOVAC" -c test/errores/E405_falta_principale.nv -o "$obj" 2>&1); rc=$?
+if [ $rc -eq 0 ] && [ -s "$obj" ]; then ok; else bad "-c deberia crear un objeto NOVA (rc=$rc)" "$out"; fi
+magic=$(dd if="$obj" bs=1 count=4 2>/dev/null)
+if [ "$magic" = "NVO1" ]; then ok; else bad "el objeto debe tener encabezado NVO1"; fi
+printf 'importa "doble.nvo" ut lib;\nfunctio principale() -> integer { redde lib.doble(21); }\n' > "$TMP/main.nv"
+out=$("$NOVAC" "$TMP/main.nv" -o "$TMPEXE" 2>&1); rc=$?
+if [ $rc -eq 0 ] && [ -s "$TMPEXE" ]; then ok; else bad "el enlazador debe aceptar un modulo .nvo (rc=$rc)" "$out"; fi
+
 # un hexadecimal con letras ya no da un E105 falso
 printf 'constans A : integer = 0xDEADBEEF;\n' > "$DIR/.hex.tmp.nv"
 out=$("$NOVAC" -t "$DIR/.hex.tmp.nv" 2>&1); rc=$?
@@ -139,6 +145,107 @@ case "$out" in
     *"Entero -559038737"*) [ $rc -eq 0 ] && ok || bad "0xDEADBEEF rc=$rc" "$out" ;;
     *) bad "0xDEADBEEF deberia valer -559038737 (integer de 32 bits con signo)" "$out" ;;
 esac
+
+# Opciones de entrega: -s conserva su volcado por stdout y genera el .asm junto
+# al ejecutable; -p lista bundles/bytes; -x ensambla el .asm de forma separada.
+out=$("$NOVAC" -s "$DIR/ejecucion/suma_10_15.nv" -o "$TMP/suma.nvx" \
+    > "$TMP/suma.stdout" 2>&1); rc=$?
+if [ $rc -eq 0 ] && [ -s "$TMP/suma.nvx" ] && [ -s "$TMP/suma.asm" ] &&
+   grep -q '__inicio:' "$TMP/suma.stdout" &&
+   grep -q 'Nova fuente: linea 2' "$TMP/suma.asm"; then
+    ok
+else
+    bad "-s debe producir .nvx/.asm con posiciones de fuente y conservar stdout (rc=$rc)" "$out"
+fi
+
+out=$("$NOVAC" -p "$DIR/ejecucion/suma_10_15.nv" -o "$TMP/paquetes.txt" 2>&1); rc=$?
+if [ $rc -eq 0 ] && grep -q 'Direccion  Linea' "$TMP/paquetes.txt" &&
+   grep -Eq '^0x[0-9A-F]+ +[1-9][0-9]*' "$TMP/paquetes.txt" &&
+   grep -q '0x0000' "$TMP/paquetes.txt"; then
+    paquetes=$(awk '/^0x0000/{print $NF; exit}' "$TMP/paquetes.txt")
+    binario=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_bytes()[48:64].hex().upper())' "$TMP/suma.nvx")
+    if [ "$paquetes" = "$binario" ]; then
+        ok
+    else
+        bad "-p debe reportar los mismos bytes que el primer bundle del .nvx" ""
+    fi
+
+    out=$(python3 tools/arbol_svg.py --novac "$NOVAC" \
+        --source "$DIR/ejecucion/suma_10_15.nv" --output "$TMP/suma.svg" 2>&1); rc=$?
+    if [ $rc -eq 0 ] && [ -s "$TMP/suma.svg" ] &&
+       python3 -c '
+import collections, sys, xml.etree.ElementTree as ET
+root = ET.parse(sys.argv[1]).getroot()
+ns = {"s": "http://www.w3.org/2000/svg"}
+nodes = root.findall(".//s:g[@class=\"node\"]", ns)
+edges = root.findall(".//s:path", ns)
+assert root.tag.endswith("svg") and nodes and len(edges) == len(nodes) - 1
+levels = collections.defaultdict(list)
+for node in nodes:
+    x, y = map(float, node.attrib["transform"][10:-1].split(","))
+    width = float(node.find("s:rect", ns).attrib["width"])
+    levels[y].append((x - width / 2, x + width / 2))
+for boxes in levels.values():
+    boxes.sort()
+    assert all(left[1] <= right[0] + 0.01 for left, right in zip(boxes, boxes[1:]))
+' "$TMP/suma.svg"; then
+        ok
+    else
+        bad "el renderizador debe crear un SVG valido, completo y sin nodos solapados (rc=$rc)" "$out"
+    fi
+
+    out=$("$NOVAC" --sym "$DIR/ejecucion/matriz_for.nv" 2>&1); rc=$?
+    if [ $rc -eq 0 ] && echo "$out" | grep -Eq 'R14 @[-+][0-9]+ -> [-+][0-9]+\(r14\)'; then
+        ok
+    else
+        bad "la tabla de simbolos debe mostrar offsets logicos y efectivos de R14 (rc=$rc)" "$out"
+    fi
+
+    out=$("$NOVAC" --sym "$DIR/factorial.nv" 2>&1); rc=$?
+    if [ $rc -eq 0 ] &&
+       echo "$out" | grep -Fq 'R14 @-4 -> +8(r14)' &&
+       echo "$out" | grep -Fq 'R14 @-8 -> +4(r14)' &&
+       echo "$out" | grep -Fq 'R14 @-12 -> +0(r14)' &&
+       echo "$out" | grep -Eq 'factorial +functio +global +integer +0 +IMEM @0x[0-9A-F]{4}' &&
+       echo "$out" | grep -Eq 'principale +functio +global +integer +0 +IMEM @0x[0-9A-F]{4}'; then
+        ok
+    else
+        bad "la tabla del factorial debe mostrar offsets efectivos y direcciones IMEM (rc=$rc)" "$out"
+    fi
+
+    out=$("$NOVAC" --sym "$DIR/ejemplos/multiplicacion.nv" 2>&1); rc=$?
+    if [ $rc -eq 0 ] && echo "$out" | grep -Fq 'R14 @-12 -> +76(r14)'; then
+        ok
+    else
+        bad "la tabla debe incluir el espacio de argumentos salientes en el marco efectivo (rc=$rc)" "$out"
+    fi
+else
+    bad "-p debe listar bundles con direccion y bytes (rc=$rc)" "$out"
+fi
+
+out=$("$NOVAC" -p "$DIR/errores/E405_falta_principale.nv" 2>&1); rc=$?
+if [ $rc -eq 1 ] && echo "$out" | grep -q 'E405' &&
+   ! echo "$out" | grep -q '^Direccion'; then
+    ok
+else
+    bad "-p debe rechazar modulos sin principale sin imprimir paquetes parciales (rc=$rc)" "$out"
+fi
+
+out=$("$NOVAC" -x "$TMP/suma.asm" -o "$TMP/suma.hex" 2>&1); rc=$?
+if [ $rc -eq 0 ] && [ -s "$TMP/suma.hex" ] &&
+   [ -s "$TMP/suma.hex.dmem.hex" ] && [ -s "$TMP/suma.hex.lst" ]; then
+    python3 ARQUITECTURA/tools/novac_image.py "$TMP/suma.nvx" --imem "$TMP/suma.imem" \
+        --dmem "$TMP/suma.dmem" >/dev/null 2>&1
+    n=$(wc -l < "$TMP/suma.hex")
+    head -n "$n" "$TMP/suma.imem" | tr '[:lower:]' '[:upper:]' > "$TMP/suma.imem.prefix"
+    if cmp -s "$TMP/suma.hex" "$TMP/suma.imem.prefix"; then
+        ok
+    else
+        bad "-x debe codificar el mismo codigo que el ejecutable NOVA" ""
+    fi
+else
+    bad "-x debe producir imagen IMEM, DMEM y listado (rc=$rc)" "$out"
+fi
 
 echo
 echo "pruebas: $PASS correctas, $FAIL fallidas"

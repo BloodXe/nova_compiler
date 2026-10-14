@@ -1,13 +1,13 @@
 #!/bin/sh
 # verificar.sh -- prueba exhaustiva del compilador Nova, fases 1 a 4.
 #
-#   sh verificar.sh            # todo
-#   sh verificar.sh 5          # solo el bloque 5
+#   sh tools/verificar.sh            # todo
+#   sh tools/verificar.sh 5          # solo el bloque 5
 #
 # Los bloques 12 a 14 contrastan contra el proyecto de CE4301. Si el
 # ensamblador de ellos no esta en una ruta vecina, se le pasa asi:
 #
-#   CERBERO_ASM=/ruta/a/cerbero/tools/cerbero_asm.py sh verificar.sh
+#   CERBERO_ASM=/ruta/a/cerbero/ARQUITECTURA/tools/cerbero_asm.py sh tools/verificar.sh
 #
 # Imprime un informe compacto y determinista: la misma version del proyecto
 # tiene que dar exactamente la misma salida en cualquier maquina. Si algo no
@@ -90,48 +90,73 @@ PY
 fi
 
 # --------------------------------------------------------------------------
-if bloque 6 "Todo el corpus: ensamblador contra binario"; then
+if bloque 6 "Codificacion binaria contra ensamblador CERBERO"; then
+    comparables=0
+    fallas=0
     for f in test/factorial.nv test/ejemplos/*.nv test/ejecucion/*.nv; do
         [ -f "$f" ] || continue
         n=$(basename "$f" .nv)
-        $NOVAC -s "$f" > "$T/p.s" 2>/dev/null
-        if ! $NOVAC "$f" -o "$T/p.exe" 2>"$T/p.err"; then
-            printf '%-18s pendiente de enlazar: %s\n' "$n" \
-                "$(sed -n 's/.*\(error\[E[0-9]*\]\).*/\1/p' "$T/p.err" | head -1)"
+        if grep -Eq '^[[:space:]]*importa[[:space:]]' "$f"; then
+            printf '%-18s modulo con imports; se omite la comparacion aislada\n' "$n"
             continue
         fi
-        a=$(python3 tools/simular.py "$T/p.s"   2>&1 | grep -E 'ejecutados|zona|R6|pila')
-        b=$(python3 tools/simular.py "$T/p.exe" 2>&1 | grep -E 'ejecutados|zona|R6|pila')
-        [ "$a" = "$b" ] && e="IGUAL  " || e="DIFIERE"
-        printf '%-18s %s %s\n' "$n" "$e" "$(echo "$a" | grep 'zona')"
+        if ! $NOVAC -s "$f" -o "$T/$n.nvx" > /dev/null 2>"$T/p.err"; then
+            printf '%-18s no enlazable de forma independiente; se omite\n' "$n"
+            continue
+        fi
+        if ! $NOVAC -x "$T/$n.asm" -o "$T/$n.hex" >"$T/asm.log" 2>&1; then
+            printf '%-18s no se pudo ensamblar con CERBERO\n' "$n"
+            fallas=$((fallas + 1))
+            continue
+        fi
+        if python3 - "$T/$n.nvx" "$T/$n.hex" <<'PY'
+import pathlib, sys
+raw = pathlib.Path(sys.argv[1]).read_bytes()
+if raw[:4] != b"NOVA" or len(raw) < 48:
+    raise SystemExit(1)
+count = int.from_bytes(raw[8:12], "little")
+expected = raw[48:48 + count * 16]
+words = [
+    int(line, 16).to_bytes(16, "little")
+    for line in pathlib.Path(sys.argv[2]).read_text().splitlines()
+    if line.strip()
+]
+raise SystemExit(0 if b"".join(words[:count]) == expected and len(words) >= count else 1)
+PY
+        then
+            printf '%-18s IDENTICO (%s bundles)\n' "$n" \
+                "$(python3 -c 'import pathlib,sys; d=pathlib.Path(sys.argv[1]).read_bytes(); print(int.from_bytes(d[8:12], "little"))' "$T/$n.nvx")"
+            comparables=$((comparables + 1))
+        else
+            printf '%-18s DIFIERE del ensamblador CERBERO\n' "$n"
+            fallas=$((fallas + 1))
+        fi
     done
+    echo "programas comparados: $comparables; diferencias: $fallas"
+    [ "$fallas" -eq 0 ] || exit 1
 fi
 
 # --------------------------------------------------------------------------
-if bloque 7 "Errores de ejecucion y recursividad de cola"; then
-    for n in rango div_cero boveda cola; do
-        $NOVAC -s test/ejecucion/$n.nv > "$T/e.s" 2>/dev/null
-        r=$(python3 tools/simular.py "$T/e.s" 2>&1)
-        printf '%-9s %s | %s\n' "$n" \
-            "$(echo "$r" | grep 'R6')" "$(echo "$r" | grep 'pila:')"
-    done
-    echo
-    echo "la misma funcion de cola, sin @cauda:"
-    sed '/@cauda/d' test/ejecucion/cola.nv > "$T/sin.nv"
-    $NOVAC -s "$T/sin.nv" > "$T/sin.s" 2>/dev/null
-    python3 tools/simular.py "$T/sin.s" 2>&1 | grep -E 'zona|pila:'
+if bloque 7 "Programas ejecutados en el RTL CERBERO"; then
+    make prueba-rtl
 fi
 
 # --------------------------------------------------------------------------
-if bloque 8 "Un binario alterado debe ser rechazado"; then
-    $NOVAC test/factorial.nv -o "$T/alt.exe" 2>/dev/null
-    python3 - "$T/alt.exe" <<'PY'
+if bloque 8 "Un ejecutable alterado debe ser rechazado"; then
+    $NOVAC test/factorial.nv -o "$T/alt.nvx" 2>/dev/null
+    python3 - "$T/alt.nvx" <<'PY'
 import sys
 d = bytearray(open(sys.argv[1],'rb').read())
 d[60] ^= 0xFF          # un bit del codigo, despues del encabezado
 open(sys.argv[1],'wb').write(d)
 PY
-    python3 tools/simular.py "$T/alt.exe" 2>&1
+    if python3 ARQUITECTURA/tools/novac_image.py "$T/alt.nvx" \
+        --imem "$T/alt.imem" --dmem "$T/alt.dmem" >"$T/alt.log" 2>&1; then
+        echo "ERROR: se acepto un ejecutable con checksum incorrecto"
+        exit 1
+    fi
+    grep -q "suma de verificacion" "$T/alt.log"
+    echo "el checksum incorrecto se rechaza antes de inicializar la memoria"
 fi
 
 # --------------------------------------------------------------------------
@@ -143,8 +168,9 @@ if bloque 9 "Banderas y codigos de salida"; then
     $NOVAC /no/existe.nv >/dev/null 2>&1;                p "archivo inexistente (3)" $?
     $NOVAC test/factorial.nv -o "$T/x" >/dev/null 2>&1;  p "programa valido (0)" $?
     $NOVAC test/errores/E301_no_declarado.nv >/dev/null 2>&1; p "con errores (1)" $?
-    $NOVAC -c test/factorial.nv >/dev/null 2>&1;         p "-c, del enlazador (2)" $?
-    $NOVAC test/factorial.nv test/ejemplos/matriz.nv >/dev/null 2>&1; p "dos fuentes (2)" $?
+    $NOVAC -c test/errores/E405_falta_principale.nv -o "$T/modulo.nvo" >/dev/null 2>&1; p "-c objeto (0)" $?
+    printf 'importa "modulo.nvo" ut m;\nfunctio principale() -> integer { redde m.doble(21); }\n' > "$T/main.nv"
+    $NOVAC "$T/main.nv" -o "$T/main.nvx" >/dev/null 2>&1; p "enlace objeto importado (0)" $?
     $NOVAC -Wloquesea test/factorial.nv >/dev/null 2>&1; p "-W desconocida (2)" $?
     $NOVAC --max-errors 0 test/errores/multi_mezcla.nv >/dev/null 2>&1; p "--max-errors 0 (2)" $?
     echo
@@ -211,7 +237,8 @@ fi
 # Localiza el ensamblador de CERBERO para los bloques 12 a 14.
 ASM=${CERBERO_ASM:-}
 if [ -z "$ASM" ]; then
-    for c in ../cerbero/tools/cerbero_asm.py ../../cerbero/tools/cerbero_asm.py \
+    for c in ARQUITECTURA/tools/cerbero_asm.py \
+             ../cerbero/tools/cerbero_asm.py ../../cerbero/tools/cerbero_asm.py \
              ../cerbero/cerbero/tools/cerbero_asm.py \
              ../../cerbero/cerbero/tools/cerbero_asm.py; do
         [ -f "$c" ] && ASM=$c && break
@@ -222,7 +249,7 @@ fi
 if bloque 12 "Contraste con el ensamblador de CERBERO"; then
     if [ -z "$ASM" ] || [ ! -f "$ASM" ]; then
         echo "no se encontro cerbero_asm.py"
-        echo "pase la ruta asi:  CERBERO_ASM=/ruta/a/cerbero_asm.py sh verificar.sh"
+        echo "pase la ruta asi:  CERBERO_ASM=/ruta/a/cerbero_asm.py sh tools/verificar.sh"
     else
         echo "usando $ASM"
         echo

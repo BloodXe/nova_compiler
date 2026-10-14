@@ -26,6 +26,14 @@
  * falta. Devuelve false si encontro algo que no puede traducir. */
 bool codegen_generate_vliw(TACList *tac, SymbolTable *st, FILE *out);
 
+/* Actualiza la tabla con el desplazamiento que usa el ensamblador despues
+ * de reservar el marco y la direccion IMEM de cada funcion, usando el
+ * programa ya relajado del generador. */
+bool codegen_update_symbol_layout(TACList *tac, SymbolTable *st);
+
+/* Muestra cada bundle con su dirección, slots de ensamblador y bytes emitidos. */
+bool codegen_print_packages(TACList *tac, SymbolTable *st, FILE *out);
+
 /* Emite el ejecutable binario: encabezado de 32 bytes, los bundles de 128
  * bits y la seccion de datos. Se construye desde la misma lista de bundles
  * que el ensamblador de texto, asi que las dos salidas no pueden divergir. */

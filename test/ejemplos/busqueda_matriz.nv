@@ -22,9 +22,7 @@ functio principale() -> integer {
                                {7, 8, 9}};
     varia pos : integer[2];
     si (buscar(m, 6, pos)) {
-        dic("encontrado en", pos[0], pos[1]);
-        redde 0;
+        redde pos[0] * 10 + pos[1];
     }
-    dic("no encontrado");
-    redde 1;
+    redde -1;
 }

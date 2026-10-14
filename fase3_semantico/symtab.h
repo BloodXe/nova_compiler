@@ -129,6 +129,10 @@ typedef struct Entrada {
     bool is_global;
     int32_t offset;
     int size_bytes;
+    int frame_offset;
+    bool has_frame_offset;
+    uint32_t code_address;
+    bool has_code_address;
     bool has_const_value;
     int32_t const_value;
     int param_count;
@@ -183,6 +187,10 @@ void symtab_add_param(Symbol *f, const char *name, DataType type,
 
 /* Fija el tamano del marco de una funcion y lo refleja en el listado. */
 void symtab_set_frame_size(Symbol *f, int bytes);
+void symtab_set_frame_offset(SymbolTable *st, const char *function,
+                             const char *name, int offset);
+void symtab_set_function_address(SymbolTable *st, const char *function,
+                                uint32_t address);
 
 /* --- Marco de la funcion activa --- */
 void symtab_reset_frame(SymbolTable *st);

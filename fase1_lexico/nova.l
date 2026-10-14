@@ -44,6 +44,7 @@ int buscar_reservada(char *lexema) {
     for (i = 0; i < cant_reservadas; i++) {
         if (strcmp(lexema, tabla[i].palabra) == 0) return tabla[i].token;
     }
+
     return TK_IDENT;
 }
 
@@ -97,6 +98,16 @@ static int tok_malo = 0;
 #define MAX_LLAVES 1024
 static int llaves_lin[MAX_LLAVES], llaves_col[MAX_LLAVES];
 static int llaves_tope = 0;
+
+/* Reinicia estado no generado por Flex antes de analizar el siguiente modulo. */
+void nova_lexer_reset(void) {
+    lin_act = col_act = 1;
+    prev_fin_linea = prev_fin_col = 1;
+    ult_fin_linea = ult_fin_col = 1;
+    tok_prev_malo = tok_malo = 0;
+    llaves_tope = 0;
+    BEGIN(0);
+}
 
 static void llave_abrir(int lin, int col) {
     if (llaves_tope < MAX_LLAVES) {

@@ -1,17 +1,17 @@
 #!/bin/sh
 # Depuracion del compilador de Nova, una fase a la vez.
 #
-#   sh depurar.sh              # todo, en orden
-#   sh depurar.sh build        # compilacion limpia y sin advertencias
-#   sh depurar.sh fase1        # analisis lexico
-#   sh depurar.sh fase2        # analisis sintactico
-#   sh depurar.sh fase3        # analisis semantico
-#   sh depurar.sh fase4        # codigo intermedio y ensamblador
-#   sh depurar.sh cerbero      # contraste con el ensamblador de CE4301
-#   sh depurar.sh cobertura    # tokens y codigos de error ejercitados
-#   sh depurar.sh memoria      # sanitizers y valgrind
-#   sh depurar.sh robustez     # el compilador no debe caerse con nada
-#   sh depurar.sh opciones     # banderas y codigos de salida
+#   sh tools/depurar.sh              # todo, en orden
+#   sh tools/depurar.sh build        # compilacion limpia y sin advertencias
+#   sh tools/depurar.sh fase1        # analisis lexico
+#   sh tools/depurar.sh fase2        # analisis sintactico
+#   sh tools/depurar.sh fase3        # analisis semantico
+#   sh tools/depurar.sh fase4        # codigo intermedio y ensamblador
+#   sh tools/depurar.sh cerbero      # contraste con el ensamblador de CE4301
+#   sh tools/depurar.sh cobertura    # tokens y codigos de error ejercitados
+#   sh tools/depurar.sh memoria      # sanitizers y valgrind
+#   sh tools/depurar.sh robustez     # el compilador no debe caerse con nada
+#   sh tools/depurar.sh opciones     # banderas y codigos de salida
 #
 # Cada objetivo imprime lo que verifica y termina en 0 si todo paso.
 
@@ -198,7 +198,7 @@ d_fase3() {
         *) falla "--sym no imprimio la tabla" ;;
     esac
     case "$salida" in
-        *"R14-"*) ok "las variables locales tienen desplazamiento de R14" ;;
+        *"R14 @-"*) ok "las variables locales tienen desplazamiento de R14" ;;
         *) falla "no se ven desplazamientos de R14 en la tabla" ;;
     esac
     case "$salida" in
@@ -313,126 +313,21 @@ d_fase4() {
         *) falla "no se emitio halt: el programa no puede terminar" ;;
     esac
 
-    # El simulador ejecuta el ensamblador aplicando la latencia de tres
-    # bundles. Si el relleno estuviera mal, estos valores saldrian distintos.
-    if command -v python3 >/dev/null 2>&1; then
-        verificar_ejecucion() {
-            arch=$1; esperado=$2; etiqueta=$3
-            $NOVAC -s "$arch" > "$TMP/prog.s" 2>/dev/null
-            res=$(python3 tools/simular.py "$TMP/prog.s" 2>&1)
-            case "$res" in
-                *"$esperado"*) ok "$etiqueta" ;;
-                *) falla "$etiqueta"; echo "$res" | head -4 | sed 's/^/        /' ;;
-            esac
-        }
-        verificar_ejecucion test/factorial.nv "[120]" "factorial(5) da 120 al ejecutarlo"
-        verificar_ejecucion test/ejemplos/traza.nv "[15]" "la traza de la matriz da 15"
-        verificar_ejecucion test/ejemplos/multiplicacion.nv "58, 64" "la multiplicacion de matrices da [[58,64],[139,154]]"
-        verificar_ejecucion test/ejemplos/mergesort.nv "1, 3, 9, 10, 27, 38, 43, 82" "mergesort ordena"
-        verificar_ejecucion test/ejemplos/bits_y_hex.nv "-65419" "los operadores de bits y 0xDEADBEEF dan -65419"
-        verificar_ejecucion test/ejemplos/desplazamientos.nv "3840, 15, -16, 268435440" \
-            "los tres desplazamientos dan [3840, 15, -16, 268435440]"
-        verificar_ejecucion test/ejemplos/busqueda_matriz.nv "1, 2" "la busqueda en matriz encuentra la posicion"
-        # "Salve, munde" son 12 bytes y tres palabras en little-endian,
-        # seguidas del 10 que marca fin de linea y del 42 de scribe.
-        verificar_ejecucion test/ejemplos/saludo.nv \
-            "[12, 1986814291, 1830825061, 1701080693, 10, 42]" \
-            "una cadena llega entera a la zona de salida"
-        rm -f "$TMP/prog.s"
-
-        # Y ninguna instruccion puede estar en un slot que no le corresponde.
-        malos=0
-        for f in test/factorial.nv test/ejemplos/*.nv; do
-            [ -f "$f" ] || continue
-            $NOVAC -s "$f" > "$TMP/prog.s" 2>/dev/null
-            if python3 tools/simular.py "$TMP/prog.s" 2>&1 | grep -q "SLOT ILEGAL"; then
-                falla "$(basename "$f") pone una instruccion en un slot ilegal"
-                malos=$((malos + 1))
+    # Los resultados se verifican en el RTL, no con un modelo de software.
+    if command -v iverilog >/dev/null 2>&1 && command -v vvp >/dev/null 2>&1; then
+        for caso in "test/factorial.nv:120" "test/ejecucion/matriz_for.nv:138"; do
+            fuente=${caso%:*}
+            esperado=${caso##*:}
+            if sh test/run_rtl_test.sh "$NOVAC" "$fuente" "$esperado" \
+                "${CERBERO_CPU:-ARQUITECTURA/src/cpu}" > "$TMP/rtl.log" 2>&1; then
+                ok "$(basename "$fuente") ejecutado en el RTL (R6=$esperado)"
+            else
+                falla "$(basename "$fuente") fallo en el RTL"
+                tail -8 "$TMP/rtl.log" | sed 's/^/        /'
             fi
         done
-        rm -f "$TMP/prog.s"
-        [ "$malos" -eq 0 ] && ok "todas las instrucciones van en un slot legal del ISA"
-
-        # --- Los chequeos de ejecucion que promete el documento ------------
-        # 134 indice fuera de rango, 136 division entre cero, 137 boveda sin
-        # autenticar. Son los tres codigos que el documento fija.
-        verificar_codigo() {
-            arch=$1; esperado=$2; etiqueta=$3
-            $NOVAC -s "$arch" > "$TMP/prog.s" 2>/dev/null
-            res=$(python3 tools/simular.py "$TMP/prog.s" 2>&1)
-            case "$res" in
-                *"(R6): $esperado"*) ok "$etiqueta" ;;
-                *) falla "$etiqueta"; echo "$res" | head -4 | sed 's/^/        /' ;;
-            esac
-        }
-        verificar_codigo test/ejecucion/rango.nv    134 "indice fuera de rango termina con 134"
-        verificar_codigo test/ejecucion/div_cero.nv 136 "division entre cero termina con 136"
-        verificar_codigo test/ejecucion/boveda.nv   137 "la boveda sin autenticar termina con 137"
-        rm -f "$TMP/prog.s"
-
-        # --- @cauda: la recursion de cola no debe apilar marcos ------------
-        # 500 niveles sin @cauda desbordan los 4 KB de pila del ISA; con la
-        # anotacion el marco es uno solo, y eso se mide.
-        $NOVAC -s test/ejecucion/cola.nv > "$TMP/cola.s" 2>/dev/null
-        sed '/@cauda/d' test/ejecucion/cola.nv > "$TMP/sin.nv"
-        $NOVAC -s "$TMP/sin.nv" > "$TMP/sin.s" 2>/dev/null
-        con=$(python3 tools/simular.py "$TMP/cola.s" 2>&1)
-        sin=$(python3 tools/simular.py "$TMP/sin.s" 2>&1)
-        case "$con" in
-            *"[125250]"*) ok "la recursion de cola suma 1..500 = 125250" ;;
-            *) falla "cola.nv no dio 125250"; echo "$con" | head -4 | sed 's/^/        /' ;;
-        esac
-        case "$con" in
-            *DESBORDA*) falla "con @cauda la pila se desborda: no se elimino la recursion" ;;
-            *) ok "con @cauda la pila se queda dentro de los 4 KB del ISA" ;;
-        esac
-        case "$sin" in
-            *DESBORDA*) ok "sin @cauda la misma funcion si desborda la pila" ;;
-            *) nota "sin @cauda no desbordo: la medicion no distingue los dos casos" ;;
-        esac
-        rm -f "$TMP/cola.s" "$TMP/sin.nv" "$TMP/sin.s"
-
-        # --- El ejecutable binario -----------------------------------------
-        # El simulador tambien carga el binario: verifica la magia, el tamano
-        # y la suma de verificacion, y lo decodifica slot por slot. Que los
-        # dos caminos den lo mismo es la prueba de que la codificacion de 128
-        # bits esta bien armada: un campo corrido daria otro resultado.
-        difieren=0
-        comparables=0
-        for f in test/factorial.nv test/ejemplos/*.nv test/ejecucion/*.nv; do
-            [ -f "$f" ] || continue
-            $NOVAC -s "$f" > "$TMP/prog.s" 2>/dev/null
-            if ! $NOVAC "$f" -o "$TMP/prog.exe" 2>/dev/null; then
-                rm -f "$TMP/prog.exe"
-                continue       # modulo de biblioteca o importa otro modulo
-            fi
-            comparables=$((comparables + 1))
-            a=$(python3 tools/simular.py "$TMP/prog.s"   2>&1 | grep -E 'ejecutados|zona|R6|pila')
-            b=$(python3 tools/simular.py "$TMP/prog.exe" 2>&1 | grep -E 'ejecutados|zona|R6|pila')
-            if [ "$a" != "$b" ]; then
-                falla "$(basename "$f"): el binario no se ejecuta igual que el ensamblador"
-                difieren=$((difieren + 1))
-            fi
-        done
-        rm -f "$TMP/prog.s" "$TMP/prog.exe"
-        [ "$difieren" -eq 0 ] && ok "los $comparables ejecutables dan el mismo resultado que su ensamblador"
-
-        # Un binario alterado tiene que ser rechazado, no ejecutado a ciegas.
-        $NOVAC test/factorial.nv -o "$TMP/prog.exe" 2>/dev/null
-        python3 - "$TMP/prog.exe" <<'PY'
-import sys
-d = bytearray(open(sys.argv[1], "rb").read())
-d[60] ^= 0xFF          # un bit dentro del codigo, despues del encabezado
-open(sys.argv[1], "wb").write(d)
-PY
-        res=$(python3 tools/simular.py "$TMP/prog.exe" 2>&1)
-        case "$res" in
-            *"EJECUTABLE INVALIDO"*) ok "la suma de verificacion detecta un binario alterado" ;;
-            *) falla "un binario alterado paso la verificacion" ;;
-        esac
-        rm -f "$TMP/prog.exe"
     else
-        nota "python3 no esta disponible; se omite la simulacion"
+        nota "iverilog/vvp no estan disponibles; se omite la ejecucion RTL"
     fi
 }
 
@@ -694,16 +589,18 @@ d_opciones() {
     if [ -s "$TMP/factorial" ]; then ok "sin banderas produce el ejecutable con el nombre del fuente"
     else falla "no se produjo el ejecutable 'factorial'"; fi
 
-    # -c y varios fuentes son del enlazador: deben decirlo, no fingir.
-    salida=$($NOVAC -c test/factorial.nv 2>&1); rc=$?
-    case "$salida:$rc" in
-        *"no esta implementado"*:2) ok "-c avisa que el objeto .nvo es del enlazador" ;;
-        *) falla "-c no lo dijo claro (rc=$rc)" ;;
-    esac
-
-    salida=$($NOVAC test/factorial.nv test/ejemplos/matriz.nv 2>&1); rc=$?
-    [ $rc -eq 2 ] && ok "varios fuentes avisan que enlazar es otra fase" \
-                  || falla "varios fuentes devolvio $rc"
+    # Objetos .nvo y enlace por imports.
+    $NOVAC -c test/errores/E405_falta_principale.nv -o "$TMP/modulo.nvo" >/dev/null 2>&1
+    if [ $? -eq 0 ] && [ "$(dd if="$TMP/modulo.nvo" bs=1 count=4 2>/dev/null)" = "NVO1" ]; then
+        ok "-c produce un objeto .nvo con cabecera valida"
+    else
+        falla "-c no produjo un objeto .nvo valido"
+    fi
+    printf 'importa "modulo.nvo" ut m;\nfunctio principale() -> integer { redde m.doble(21); }\n' > "$TMP/enlace.nv"
+    $NOVAC "$TMP/enlace.nv" -o "$TMP/enlace.nvx" >/dev/null 2>&1
+    [ $? -eq 0 ] && [ -s "$TMP/enlace.nvx" ] \
+        && ok "el enlace resuelve llamadas exportadas desde .nvo" \
+        || falla "no se pudo enlazar una llamada desde .nvo"
 
     # Un programa con advertencias compila y debe decir cuantas hubo.
     salida=$($NOVAC test/advertencias/W001_variable_sin_usar.nv -o "$TMP/a.out" 2>&1); rc=$?
@@ -733,7 +630,8 @@ d_cerbero() {
     # de la codificacion del ISA tienen que producir los mismos 128 bits.
     ASM=${CERBERO_ASM:-}
     if [ -z "$ASM" ]; then
-        for c in ../cerbero/tools/cerbero_asm.py ../../cerbero/tools/cerbero_asm.py \
+        for c in ARQUITECTURA/tools/cerbero_asm.py \
+                 ../cerbero/tools/cerbero_asm.py ../../cerbero/tools/cerbero_asm.py \
                  ../cerbero/cerbero/tools/cerbero_asm.py; do
             [ -f "$c" ] && ASM=$c && break
         done

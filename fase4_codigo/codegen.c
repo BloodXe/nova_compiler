@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <limits.h>
 #include "codegen.h"
 #include "diag.h"
 
@@ -85,7 +86,7 @@
  * de etiquetas, y despues hay dos emisores sobre la misma lista, el de texto
  * y el binario. Asi no pueden divergir.
  */
-typedef struct { char *s[5]; } Bundle;
+typedef struct { char *s[5]; int source_line; } Bundle;
 typedef struct { char *nombre; int bundle; int orden; } Etiq;
 typedef struct { char *nombre; int direccion; } EtiqDato;
 
@@ -119,6 +120,7 @@ static long ciclo = 0;
 static long listo[16];
 static long listo_flags = 0;
 static bool hubo_error = false;
+static int linea_fuente_actual = 0;
 
 /* Estado de la funcion que se esta emitiendo */
 static const char *func = NULL;
@@ -134,6 +136,10 @@ static bool etiqueta_cuerpo_emitida = false;
 #define MAX_TEMPS 512
 static char *temps[MAX_TEMPS];
 static int n_temps = 0;
+static int temp_primero[MAX_TEMPS];
+static int temp_ultimo[MAX_TEMPS];
+static int temp_slot[MAX_TEMPS];
+static int n_temp_slots = 0;
 
 static TACList *lista = NULL;
 
@@ -217,6 +223,7 @@ static void bundle(const char *s0, const char *s1, const char *s2,
         if (prog == NULL) { fprintf(stderr, "novac: sin memoria\n"); exit(3); }
     }
     Bundle *b = &prog[n_bundles++];
+    b->source_line = linea_fuente_actual;
     b->s[0] = dup_o_nulo(s0); b->s[1] = dup_o_nulo(s1);
     b->s[2] = dup_o_nulo(s2); b->s[3] = dup_o_nulo(s3);
     b->s[4] = dup_o_nulo(s4);
@@ -474,20 +481,32 @@ static int indice_temp(const char *nombre) {
     for (int i = 0; i < n_temps; i++)
         if (strcmp(temps[i], nombre) == 0) return i;
     if (n_temps < MAX_TEMPS) {
-        temps[n_temps] = (char *)nombre;
-        return n_temps++;
+        int indice = n_temps++;
+        temps[indice] = (char *)nombre;
+        temp_primero[indice] = INT_MAX;
+        temp_ultimo[indice] = -1;
+        temp_slot[indice] = -1;
+        return indice;
     }
     return 0;
+}
+
+static int desplazamiento_simbolo(const TACSimbolo *simbolo) {
+    if (simbolo == NULL) return -1;
+    return f_base_loc + f_marco_loc + simbolo->offset;
 }
 
 /* Desplazamiento del operando respecto de R14, o -1 si no es un dato. */
 static int disp_de(const char *nombre) {
     if (nombre == NULL) return -1;
-    if (tac_es_temporal(nombre))
-        return f_base_tmp + 4 * indice_temp(nombre);
+    if (tac_es_temporal(nombre)) {
+        int indice = indice_temp(nombre);
+        if (temp_slot[indice] < 0) return -1;
+        return f_base_tmp + 4 * temp_slot[indice];
+    }
     const TACSimbolo *s = tac_buscar_simbolo(lista, func, nombre);
     if (s == NULL) return -1;
-    return f_base_loc + f_marco_loc + s->offset;
+    return desplazamiento_simbolo(s);
 }
 
 static const TACSimbolo *sim_de(const char *nombre) {
@@ -880,6 +899,7 @@ static void emitir_inst(TACInst *i) {
             break;
 
         case TAC_FEISTEL:
+        case TAC_FEISTEL_DECRYPT:
             guardia_boveda();
             /* Las rondas operan sobre el par P0 = R0:R1, con L en el par y R
              * en el impar. Se cargan, se ejecuta la ronda y se devuelven al
@@ -887,7 +907,9 @@ static void emitir_inst(TACInst *i) {
             cargar(RB, i->arg1);
             lw(0, RB, 0);
             lw(1, RB, 4);
-            snprintf(buf, sizeof(buf), "f4e p0, k%ld, #%d", i->valor, i->aux);
+            snprintf(buf, sizeof(buf), "%s p0, k%ld, #%d",
+                     i->op == TAC_FEISTEL ? "f4e" : "f4d",
+                     i->valor, i->aux);
             emitir(S_CRP, buf, 0, 0, 1);
             listo[1] = listo[0];
             sw(0, RB, 0);
@@ -1277,6 +1299,8 @@ static void imprimir_codigo_texto(void) {
             break;
         }
         const Bundle *x = &prog[b];
+        if (x->source_line > 0)
+            fprintf(sal, "    // Nova fuente: linea %d\n", x->source_line);
         fprintf(sal, "    %-26s | %-10s | %-22s | %-18s | %-16s ;\n",
                 x->s[0] ? x->s[0] : "-", x->s[1] ? x->s[1] : "-",
                 x->s[2] ? x->s[2] : "-", x->s[3] ? x->s[3] : "-",
@@ -1291,6 +1315,7 @@ static void medir_funcion(TACInst *desde) {
     f_marco_loc = 0;
     f_guarda_r15 = false;
     n_temps = 0;
+    n_temp_slots = 0;
     int k_salida = 0;
 
     for (const TACSimbolo *s = lista->simbolos; s != NULL; s = s->next) {
@@ -1298,21 +1323,45 @@ static void medir_funcion(TACInst *desde) {
         if (-s->offset > f_marco_loc) f_marco_loc = -s->offset;
     }
 
-    for (TACInst *i = desde; i != NULL; i = i->next) {
+    int posicion = 0;
+    for (TACInst *i = desde; i != NULL; i = i->next, posicion++) {
         if (i->op == TAC_FUNC_END) break;
         if (i->op == TAC_CALL || i->op == TAC_DIV || i->op == TAC_MOD)
             f_guarda_r15 = true;
         if (i->op == TAC_PARAM && i->aux > 4 && i->aux - 4 > k_salida)
             k_salida = i->aux - 4;
         /* Registra los temporales en el orden en que aparecen. */
-        const char *ops[3] = {i->result, i->arg1, i->arg2};
-        for (int k = 0; k < 3; k++)
-            if (ops[k] != NULL && tac_es_temporal(ops[k])) indice_temp(ops[k]);
+        if (i->result != NULL && tac_es_temporal(i->result)) {
+            int t = indice_temp(i->result);
+            if (temp_primero[t] > posicion) temp_primero[t] = posicion;
+            if (temp_ultimo[t] < posicion) temp_ultimo[t] = posicion;
+        }
+        const char *ops[2] = {i->arg1, i->arg2};
+        for (int k = 0; k < 2; k++) {
+            if (ops[k] == NULL || !tac_es_temporal(ops[k])) continue;
+            int t = indice_temp(ops[k]);
+            if (temp_primero[t] > posicion) temp_primero[t] = posicion;
+            if (temp_ultimo[t] < posicion) temp_ultimo[t] = posicion;
+        }
+    }
+
+    int slot_ultimo[MAX_TEMPS];
+    for (int t = 0; t < n_temps; t++) {
+        int slot = -1;
+        for (int s = 0; s < n_temp_slots; s++) {
+            if (slot_ultimo[s] < temp_primero[t]) {
+                slot = s;
+                break;
+            }
+        }
+        if (slot < 0) slot = n_temp_slots++;
+        temp_slot[t] = slot;
+        slot_ultimo[slot] = temp_ultimo[t];
     }
 
     f_base_loc = 4 * k_salida;
     f_base_tmp = f_base_loc + f_marco_loc;
-    f_total = f_base_tmp + 4 * n_temps + (f_guarda_r15 ? 4 : 0);
+    f_total = f_base_tmp + 4 * n_temp_slots + (f_guarda_r15 ? 4 : 0);
     if (f_total < 4) f_total = 4;
 }
 
@@ -1355,7 +1404,7 @@ static bool funcion_usa_boveda(TACInst *i) {
     for (TACInst *j = i->next; j != NULL && j->op != TAC_FUNC_END; j = j->next) {
         switch (j->op) {
             case TAC_AUTHW: case TAC_VAULT_LOGIN: case TAC_VAULT_LOGOUT:
-            case TAC_KSETW: case TAC_FEISTEL:
+            case TAC_KSETW: case TAC_FEISTEL: case TAC_FEISTEL_DECRYPT:
                 return true;
             default: break;
         }
@@ -1370,6 +1419,7 @@ static bool construir_una_vez(TACList *tac) {
     hubo_error = false;
     usa_div = usa_scribe_int = usa_scribe_txt = usa_dic = false;
     n_bundles = n_etqs = n_etqs_dato = n_notas = 0;
+    linea_fuente_actual = 0;
     orden_global = 0;
     n_sitios = 0;
     inicio_seguro = -1;
@@ -1435,6 +1485,7 @@ static bool construir_una_vez(TACList *tac) {
         medir_funcion(i->next);
 
         ciclo = 0;
+        linea_fuente_actual = 0;
         for (int r = 0; r < 16; r++) listo[r] = 0;
         listo_flags = 0;
         cache_limpiar();
@@ -1443,8 +1494,11 @@ static bool construir_una_vez(TACList *tac) {
         registrar_etiqueta(func);
         emitir_prologo();
 
-        for (TACInst *j = i->next; j != NULL && j->op != TAC_FUNC_END; j = j->next)
+        for (TACInst *j = i->next; j != NULL && j->op != TAC_FUNC_END; j = j->next) {
+            linea_fuente_actual = j->linea;
             emitir_inst(j);
+        }
+        linea_fuente_actual = 0;
     }
     }
 
@@ -1522,6 +1576,34 @@ static bool construir_programa(TACList *tac) {
                          n_bundles - inicio_seguro, SEC_BUNDLES);
     }
 
+    return ok;
+}
+
+bool codegen_update_symbol_layout(TACList *tac, SymbolTable *st) {
+    if (tac == NULL || st == NULL) return false;
+    lista = tac;
+    for (TACInst *i = tac->head; i != NULL; i = i->next) {
+        if (i->op != TAC_FUNC_BEGIN || i->result == NULL) continue;
+        func = i->result;
+        medir_funcion(i->next);
+        for (const TACSimbolo *s = tac->simbolos; s != NULL; s = s->next) {
+            if (s->funcion == NULL || strcmp(s->funcion, func) != 0) continue;
+            symtab_set_frame_offset(st, func, s->nombre,
+                                    desplazamiento_simbolo(s));
+        }
+    }
+
+    bool ok = construir_programa(tac);
+    if (ok) {
+        for (TACInst *i = tac->head; i != NULL; i = i->next) {
+            if (i->op != TAC_FUNC_BEGIN || i->result == NULL) continue;
+            int bundle = buscar_etiqueta(i->result);
+            if (bundle >= 0)
+                symtab_set_function_address(st, i->result,
+                                            (uint32_t)bundle * 16u);
+        }
+    }
+    liberar_todo();
     return ok;
 }
 
@@ -1952,6 +2034,42 @@ static void codificar_bundle(int b, unsigned char *dest) {
     }
 }
 
+bool codegen_print_packages(TACList *tac, SymbolTable *st, FILE *out) {
+    (void)st;
+    if (tac == NULL || out == NULL) return false;
+    sal = NULL;
+    bool ok = construir_programa(tac);
+    if (!ok) {
+        liberar_todo();
+        return false;
+    }
+    if (buscar_etiqueta("__inicio") < 0) {
+        diag_error("E405", 0, 1, 1,
+                   "no hay 'principale': no se pueden mostrar paquetes ejecutables");
+        liberar_todo();
+        return false;
+    }
+
+    fprintf(out, "Direccion  Linea  S0                       S1         S2                     S3              S4             Bytes\n");
+    unsigned char bytes[16];
+    for (int b = 0; b < n_bundles; b++) {
+        codificar_bundle(b, bytes);
+        fprintf(out, "0x%04X     %-5d  %-26s | %-10s | %-22s | %-16s | %-16s ",
+                b * 16,
+                prog[b].source_line,
+                prog[b].s[0] ? prog[b].s[0] : "-",
+                prog[b].s[1] ? prog[b].s[1] : "-",
+                prog[b].s[2] ? prog[b].s[2] : "-",
+                prog[b].s[3] ? prog[b].s[3] : "-",
+                prog[b].s[4] ? prog[b].s[4] : "-");
+        for (int i = 0; i < (int)sizeof(bytes); i++) fprintf(out, "%02X", bytes[i]);
+        fputc('\n', out);
+    }
+    ok = !hubo_error && diag_errores() == 0 && !ferror(out);
+    liberar_todo();
+    return ok;
+}
+
 static void poner32(unsigned char *p, uint32_t v) {
     p[0] = (unsigned char)(v & 0xFF);
     p[1] = (unsigned char)((v >> 8) & 0xFF);
@@ -1968,8 +2086,8 @@ bool codegen_emitir_binario(TACList *tac, SymbolTable *st, FILE *out) {
     int entrada = buscar_etiqueta("__inicio");
     if (entrada < 0) {
         diag_error("E405", 0, 1, 1,
-                   "no hay 'principale': un modulo de biblioteca se compila "
-                   "con -c, no a un ejecutable");
+                   "no hay 'principale': un modulo de biblioteca no puede ser "
+                   "el punto de entrada de un ejecutable");
         liberar_todo();
         return false;
     }

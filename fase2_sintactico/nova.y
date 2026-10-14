@@ -22,6 +22,12 @@ static int cierra_sentencia(int tok);
 
 int errores_sintacticos = 0;
 Nodo *raiz_ast = NULL;
+
+void nova_parser_reset(void) {
+    sint_suprimido = 0;
+    errores_sintacticos = 0;
+    raiz_ast = NULL;
+}
 %}
 
 %union {

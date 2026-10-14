@@ -58,6 +58,10 @@ void diag_iniciar(const char *archivo) {
     memset(por_fase, 0, sizeof(por_fase));
 }
 
+void diag_archivo(const char *archivo) {
+    archivo_fuente = archivo;
+}
+
 void diag_max_errores(int n) {
     if (n > 0) max_errores = n;
 }

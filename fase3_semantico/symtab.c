@@ -95,6 +95,10 @@ static void registrar_entrada(SymbolTable *st, Symbol *s) {
     e->is_global = s->is_global;
     e->offset = s->offset;
     e->size_bytes = s->size_bytes;
+    e->frame_offset = 0;
+    e->has_frame_offset = false;
+    e->code_address = 0;
+    e->has_code_address = false;
     e->has_const_value = s->has_const_value;
     e->const_value = s->const_value;
     e->param_count = s->param_count;
@@ -120,7 +124,7 @@ void symtab_set_ambito(SymbolTable *st, const char *nombre) {
 }
 
 /* --- Intrinsecas --------------------------------------------------------
- * scribe, dic, longitudo y las cuatro intrinsecas de la boveda no son
+ * scribe, dic, longitudo y las intrinsecas de la boveda no son
  * palabras reservadas: son identificadores predefinidos del ambito global.
  * Se registran con su firma real para que las verificaciones E304, E305 y
  * E319 funcionen igual que con cualquier funcion del usuario.
@@ -172,6 +176,13 @@ static void register_intrinsics(SymbolTable *st) {
 
     /* feistel(bloque: integer[], ranura: integer, ronda: integer) -> nihil */
     f = symtab_insert_func(st, "feistel", TYPE_NIHIL, 0, false, 0, 0);
+    marcar_intrinseca(f);
+    symtab_add_param(f, "bloque", TYPE_INTEGER, 1, true, 0, 0);
+    symtab_add_param(f, "ranura", TYPE_INTEGER, 0, false, 0, 0);
+    symtab_add_param(f, "ronda", TYPE_INTEGER, 0, false, 0, 0);
+
+    /* desfeistel(bloque: integer[], ranura: integer, ronda: integer) -> nihil */
+    f = symtab_insert_func(st, "desfeistel", TYPE_NIHIL, 0, false, 0, 0);
     marcar_intrinseca(f);
     symtab_add_param(f, "bloque", TYPE_INTEGER, 1, true, 0, 0);
     symtab_add_param(f, "ranura", TYPE_INTEGER, 0, false, 0, 0);
@@ -415,6 +426,31 @@ void symtab_set_frame_size(Symbol *f, int bytes) {
     if (f->entrada != NULL) f->entrada->local_frame_size = bytes;
 }
 
+void symtab_set_frame_offset(SymbolTable *st, const char *function,
+                             const char *name, int offset) {
+    if (st == NULL || function == NULL || name == NULL) return;
+    for (Entrada *e = st->listado; e != NULL; e = e->next) {
+        if (!e->is_global && e->kind != SYMBOL_FUNC &&
+            e->ambito != NULL && strcmp(e->ambito, function) == 0 &&
+            e->name != NULL && strcmp(e->name, name) == 0) {
+            e->frame_offset = offset;
+            e->has_frame_offset = true;
+        }
+    }
+}
+
+void symtab_set_function_address(SymbolTable *st, const char *function,
+                                 uint32_t address) {
+    if (st == NULL || function == NULL) return;
+    for (Entrada *e = st->listado; e != NULL; e = e->next) {
+        if (e->kind == SYMBOL_FUNC && !e->is_intrinsic &&
+            e->name != NULL && strcmp(e->name, function) == 0) {
+            e->code_address = address;
+            e->has_code_address = true;
+        }
+    }
+}
+
 /* --- Marco de la funcion activa ---------------------------------------- */
 
 void symtab_reset_frame(SymbolTable *st) {
@@ -444,27 +480,36 @@ static const char *tipo_detallado(char *buf, size_t n, const Entrada *e) {
 
 void symtab_dump(FILE *out, const SymbolTable *st) {
     fprintf(out, "=== Tabla de simbolos ===\n");
-    fprintf(out, "%-14s %-9s %-12s %-16s %3s  %-13s %6s  %s\n",
-            "NOMBRE", "CLASE", "AMBITO", "TIPO", "NIV", "DIRECCION",
+    fprintf(out, "%-14s %-9s %-12s %-16s %3s  %-34s %6s  %s\n",
+            "NOMBRE", "CLASE", "AMBITO", "TIPO", "NIV", "DIRECCION/PUNTERO",
             "BYTES", "ORIGEN");
-    for (int i = 0; i < 100; i++) fputc('-', out);
+    for (int i = 0; i < 124; i++) fputc('-', out);
     fputc('\n', out);
+    fprintf(out, "Locales: R14 @N es el offset logico; -> N(r14) es el desplazamiento usado por el ensamblador tras reservar el marco.\n");
+    fprintf(out, "Globales: DMEM @0xNNNN es una direccion absoluta de memoria.\n");
 
-    char tbuf[40], dir[24], org[40];
+    char tbuf[40], dir[48], org[48];
     for (const Entrada *e = st->listado; e != NULL; e = e->next) {
         tipo_detallado(tbuf, sizeof(tbuf), e);
 
-        if (e->kind == SYMBOL_FUNC)
-            snprintf(dir, sizeof(dir), "%s", e->is_intrinsic ? "intrinseca" : "<codigo>");
+        if (e->kind == SYMBOL_FUNC && e->is_intrinsic)
+            snprintf(dir, sizeof(dir), "%s", "intrinseca");
+        else if (e->kind == SYMBOL_FUNC && e->has_code_address)
+            snprintf(dir, sizeof(dir), "IMEM @0x%04X", e->code_address);
+        else if (e->kind == SYMBOL_FUNC)
+            snprintf(dir, sizeof(dir), "%s", "<sin codigo>");
         else if (e->kind == SYMBOL_MODULE)
             snprintf(dir, sizeof(dir), "%s", "<enlace>");
         else if (e->kind == SYMBOL_CONST)
             e->has_const_value ? snprintf(dir, sizeof(dir), "= %d", (int)e->const_value)
                                : snprintf(dir, sizeof(dir), "%s", "<inmediato>");
         else if (e->is_global)
-            snprintf(dir, sizeof(dir), "DMEM 0x%04X", (unsigned)e->offset);
+            snprintf(dir, sizeof(dir), "DMEM @0x%04X", (unsigned)e->offset);
+        else if (e->has_frame_offset)
+            snprintf(dir, sizeof(dir), "R14 @%+d -> %+d(r14)",
+                     (int)e->offset, e->frame_offset);
         else
-            snprintf(dir, sizeof(dir), "R14%+d", (int)e->offset);
+            snprintf(dir, sizeof(dir), "R14 @%+d", (int)e->offset);
 
         if (e->kind == SYMBOL_FUNC && e->is_variadic)
             snprintf(org, sizeof(org), "%s", "predefinida, variadica");
@@ -483,12 +528,12 @@ void symtab_dump(FILE *out, const SymbolTable *st) {
         int bytes = (e->kind == SYMBOL_VAR || e->kind == SYMBOL_PARAM)
                     ? e->size_bytes : 0;
 
-        fprintf(out, "%-14.14s %-9s %-12.12s %-16s %3d  %-13s %6d  %s\n",
+        fprintf(out, "%-14.14s %-9s %-12.12s %-16s %3d  %-34s %6d  %s\n",
                 e->name, symbol_kind_to_string(e->kind), e->ambito, tbuf,
                 e->level, dir, bytes, org);
     }
 
-    for (int i = 0; i < 100; i++) fputc('-', out);
+    for (int i = 0; i < 124; i++) fputc('-', out);
     fputc('\n', out);
     fprintf(out, "datos globales: %d de %d bytes (0x%04X-0x%04X); "
                  "pila: %d bytes desde 0x%04X hacia abajo\n",

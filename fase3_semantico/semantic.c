@@ -266,9 +266,8 @@ static bool identificador_valido(const char *s) {
     return true;
 }
 
-/* Registra los espacios de nombres importados. La resolucion real de los
- * simbolos de otro modulo es trabajo del enlazador (familia E4xx); aqui solo
- * se admite el nombre para no reportar E301 sobre 'modulo.algo'. */
+/* Registra los espacios de nombres importados. El enlazador integra las
+ * declaraciones antes del analisis semantico y deja las llamadas resueltas. */
 static void registrar_imports(Nodo *imports) {
     if (imports == NULL) return;
 
@@ -623,7 +622,8 @@ static void verificar_rango_boveda(Symbol *f, Nodo **nodos, int nargs) {
 
     if (strcmp(f->name, "custodi") == 0) {
         indices[0] = 0; nombres[0] = "ranura";
-    } else if (strcmp(f->name, "feistel") == 0) {
+    } else if (strcmp(f->name, "feistel") == 0 ||
+               strcmp(f->name, "desfeistel") == 0) {
         indices[0] = 1; nombres[0] = "ranura";
         indices[1] = 2; nombres[1] = "ronda";
     } else {
@@ -661,7 +661,8 @@ static Info analizar_llamada(Nodo *n) {
     }
     int comparables = nargs < MAX_ARGS ? nargs : MAX_ARGS;
 
-    /* Llamada calificada: la firma esta en otro modulo. */
+    /* Una llamada calificada que sobreviva a la fase de enlace indica una
+     * unidad de analisis aislada, por ejemplo el AST de una biblioteca. */
     if (n->modulo != NULL) {
         Symbol *m = symtab_lookup(st, n->modulo);
         if (m == NULL || m->kind != SYMBOL_MODULE) {
