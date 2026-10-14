@@ -684,7 +684,7 @@ static void emitir_inst(TACInst *i) {
             }
             cargar(RA, i->arg1);
             cargar(RB, i->arg2);
-            alu3(op, RA, RA, RB);
+            emit_alu_instruction_vliw(i, op, RA, RA, RB, i->is_short ? S_CRP : S_ALU0);
             guardar(RA, i->result);
             break;
         }

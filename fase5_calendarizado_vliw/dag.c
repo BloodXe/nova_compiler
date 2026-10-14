@@ -206,3 +206,27 @@ void clear_uses(UseNode **use_list) {
     }
     *use_list = NULL;
 }
+
+// Libera la memoria reservada para el DAG, sus nodos y sus aristas
+void free_dag(DAG* dag) {
+    if (dag == NULL) return;
+    
+    DAGNode* current = dag->head;
+    while (current != NULL) {
+        DAGNode* next_node = current->next;
+        
+        // Liberar las aristas salientes del nodo actual
+        DAGEdge* edge = current->out_edges;
+        while (edge != NULL) {
+            DAGEdge* next_edge = edge->next;
+            free(edge);
+            edge = next_edge;
+        }
+        
+        // No liberamos 'current->instr' porque esa memoria pertenece a la lista TAC original
+        free(current);
+        current = next_node;
+    }
+    
+    free(dag);
+}

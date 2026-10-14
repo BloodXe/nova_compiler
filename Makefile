@@ -19,8 +19,8 @@ SRCS = main.c \
        $(SEM_DIR)/symtab.c \
        $(SEM_DIR)/semantic.c \
        $(GEN_DIR)/tac.c \
-       $(GEN_DIR)/codegen.c
-	   $(SCHED_DIR)/dag.c \
+       $(GEN_DIR)/codegen.c \
+       $(SCHED_DIR)/dag.c \
        $(SCHED_DIR)/scheduler.c
 
 OBJS = $(SRCS:.c=.o)

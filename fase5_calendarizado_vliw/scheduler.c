@@ -35,6 +35,7 @@ static bool has_wconf(TACInst* instr, Bundle* bundle) {
     return false;
 }
 
+/*
 // Verifica si un bundle está completamente vacío (NOP Bundle)
 static bool is_bundle_empty(Bundle* bundle) {
     for (int i = 0; i < 5; i++) {
@@ -42,6 +43,7 @@ static bool is_bundle_empty(Bundle* bundle) {
     }
     return true;
 }
+*/
 
 //Prototipos locales
 static Bundle* create_empty_bundle(int cycle);
