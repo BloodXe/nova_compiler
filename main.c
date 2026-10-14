@@ -399,7 +399,10 @@ int main(int argc, char **argv) {
     int modo_binario = (!modo_ir && !modo_asm && !modo_arbol && !modo_symtab);
 
     if (modo_ir || modo_asm || modo_binario) {
-        if (modo_verbose) fprintf(stderr, "== Fase 4: Generacion de codigo -- %s ==\n", archivo_fuente);
+        if (modo_verbose) {
+            fprintf(stderr, "== Fase 4: Generacion de codigo intermedio -- %s ==\n", archivo_fuente);
+            fprintf(stderr, "== Fase 5: Planificacion VLIW y Empaquetado -- %s ==\n", archivo_fuente);
+        }
 
         TACList *tac = tac_generate_from_ast(raiz_ast, tabla);
         bool gen_ok = true;

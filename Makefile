@@ -3,12 +3,13 @@ LEX_DIR := fase1_lexico
 PARSE_DIR := fase2_sintactico
 SEM_DIR := fase3_semantico
 GEN_DIR := fase4_codigo
+SCHED_DIR := fase5_calendarizado_vliw
 
 BIN := novac
 # -MMD -MP genera los .d con las dependencias de encabezados: cambiar un .h
 # recompila lo que lo incluye. Sin esto, editar symtab.h dejaba objetos
 # compilados contra estructuras distintas.
-CFLAGS := -Wall -Wextra -g -MMD -MP -I$(LEX_DIR) -I$(PARSE_DIR) -I$(SEM_DIR) -I$(GEN_DIR)
+CFLAGS := -Wall -Wextra -g -MMD -MP -I$(LEX_DIR) -I$(PARSE_DIR) -I$(SEM_DIR) -I$(GEN_DIR) -I$(SCHED_DIR)
 
 SRCS = main.c \
        $(LEX_DIR)/diag.c \
@@ -19,6 +20,8 @@ SRCS = main.c \
        $(SEM_DIR)/semantic.c \
        $(GEN_DIR)/tac.c \
        $(GEN_DIR)/codegen.c
+	   $(SCHED_DIR)/dag.c \
+       $(SCHED_DIR)/scheduler.c
 
 OBJS = $(SRCS:.c=.o)
 DEPS = $(OBJS:.o=.d)

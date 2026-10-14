@@ -37,6 +37,8 @@
 #include <string.h>
 #include "codegen.h"
 #include "diag.h"
+#include "dag.h"          
+#include "scheduler.h"    
 
 /* --- Mapa que reserva el compilador dentro del segmento de globales ----
  * 0x0000-0x1FFF  variables globales (Nova no tiene globales mutables)
@@ -85,11 +87,11 @@
  * de etiquetas, y despues hay dos emisores sobre la misma lista, el de texto
  * y el binario. Asi no pueden divergir.
  */
-typedef struct { char *s[5]; } Bundle;
+typedef struct { char *s[5]; } AsmBundle;
 typedef struct { char *nombre; int bundle; int orden; } Etiq;
 typedef struct { char *nombre; int direccion; } EtiqDato;
 
-static Bundle *prog = NULL;
+static AsmBundle *prog = NULL;
 static int n_bundles = 0, cap_bundles = 0;
 static Etiq *etqs = NULL;
 static int n_etqs = 0, cap_etqs = 0;
@@ -213,10 +215,10 @@ static void bundle(const char *s0, const char *s1, const char *s2,
                    const char *s3, const char *s4) {
     if (n_bundles == cap_bundles) {
         cap_bundles = cap_bundles ? cap_bundles * 2 : 256;
-        prog = realloc(prog, (size_t)cap_bundles * sizeof(Bundle));
+        prog = realloc(prog, (size_t)cap_bundles * sizeof(AsmBundle));
         if (prog == NULL) { fprintf(stderr, "novac: sin memoria\n"); exit(3); }
     }
-    Bundle *b = &prog[n_bundles++];
+    AsmBundle *b = &prog[n_bundles++];
     b->s[0] = dup_o_nulo(s0); b->s[1] = dup_o_nulo(s1);
     b->s[2] = dup_o_nulo(s2); b->s[3] = dup_o_nulo(s3);
     b->s[4] = dup_o_nulo(s4);
@@ -1273,7 +1275,7 @@ static void imprimir_datos_texto(TACList *tac) {
     fprintf(sal, "__out_buf:\n    .space %d\n\n", 0x4000 - DIR_OUT_BUF);
 }
 
-static bool is_bundle_empty_cg(const Bundle *b) {
+static bool is_bundle_empty_cg(const AsmBundle *b) {
     for (int i = 0; i < 5; i++) {
         if (b->s[i] != NULL) return false;
     }
@@ -1305,7 +1307,7 @@ static void imprimir_codigo_texto(void) {
             break;
         }
         
-        const Bundle *x = &prog[b];
+        const AsmBundle *x = &prog[b];
         
         // REGLA: Emisión de NOPs explícitos en el ensamblador
         if (is_bundle_empty_cg(x)) {
@@ -1480,8 +1482,62 @@ static bool construir_una_vez(TACList *tac) {
         registrar_etiqueta(func);
         emitir_prologo();
 
-        for (TACInst *j = i->next; j != NULL && j->op != TAC_FUNC_END; j = j->next)
-            emitir_inst(j);
+        // === INICIO DE LA INTEGRACIÓN FASE 5 ===
+        TACInst *block_start = i->next;
+        TACInst *j = i->next;
+
+        while (j != NULL && j->op != TAC_FUNC_END) {
+            // Un bloque básico termina si la instrucción actual altera el flujo,
+            // o si la SIGUIENTE instrucción es una etiqueta o el fin de la función.
+            bool end_of_block = (j->op == TAC_GOTO || j->op == TAC_IF_FALSE || 
+                                 j->op == TAC_IF_TRUE || j->op == TAC_CALL || 
+                                 j->op == TAC_TAILCALL || j->op == TAC_RET || 
+                                 j->op == TAC_RET_VAL || j->op == TAC_HALT ||
+                                 j->next == NULL || j->next->op == TAC_LABEL || 
+                                 j->next->op == TAC_FUNC_END);
+            
+            if (end_of_block) {
+                TACInst *block_end = j;
+                
+                // 1. Construir DAG para este bloque
+                DAG *block_dag = build_dag_for_basic_block(block_start, block_end);
+                
+                // 2. Planificar (List Scheduling)
+                BundleList *scheduled_bundles = schedule_basic_block(block_dag);
+                
+                // 3. Emitir las instrucciones en el orden planificado
+                if (scheduled_bundles != NULL) {
+                    Bundle *b = scheduled_bundles->head;
+                    while (b != NULL) {
+                        bool empty_bundle = true;
+                        
+                        // Emitir las instrucciones empaquetadas en este ciclo
+                        for (int slot = 0; slot < 5; slot++) {
+                            if (b->slots[slot] != NULL) {
+                                emitir_inst(b->slots[slot]);
+                                empty_bundle = false;
+                            }
+                        }
+                        
+                        // Si el planificador determinó que el bundle debe ir vacío (Latencia explícita)
+                        if (empty_bundle) {
+                            vacio(); 
+                            ciclo++;
+                        }
+                        
+                        Bundle *temp = b;
+                        b = b->next;
+                        free(temp);
+                    }
+                    free(scheduled_bundles);
+                }
+                free_dag(block_dag);
+                
+                block_start = j->next; // El siguiente bloque empieza en la próxima instrucción
+            }
+            j = j->next;
+        }
+
     }
     }
 
@@ -1970,7 +2026,7 @@ static uint16_t cod_bru(const char *texto, int bundle_actual) {
 
 /* Codifica un bundle en 16 bytes, little-endian por palabras. */
 static void codificar_bundle(int b, unsigned char *dest) {
-    const Bundle *x = &prog[b];
+    const AsmBundle *x = &prog[b];
     uint32_t s0 = x->s[0] ? cod_alu(x->s[0]) : 0;
     uint32_t s1 = x->s[1] ? cod_alu(x->s[1]) : 0;
     uint32_t s2 = x->s[2] ? cod_lsu(x->s[2]) : 0;
